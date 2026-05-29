@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover" />
+  <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+  <meta name="description" content="Qiymat — premium shaxsiy moliya menejeri. Daromad, xarajat, byudjet va jamg'arma — bir joyda." />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Qiymat" />
+  <meta name="format-detection" content="telephone=no" />
+
+  <title>Qiymat — Shaxsiy moliya</title>
+
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=DM+Serif+Display&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Splash (visible until JS hydrates) -->
+  <div id="splash" class="splash" aria-hidden="true">
+    <div class="splash-mark">
+      <span class="splash-q">Q</span>
+      <span class="splash-dot"></span>
+    </div>
+  </div>
+
+  <!-- App shell -->
+  <div id="app" class="app" hidden>
+    <!-- Top bar -->
+    <header class="topbar" id="topbar">
+      <button class="icon-btn" id="navBack" aria-label="Orqaga" hidden>
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <h1 class="topbar-title" id="topbarTitle">Qiymat</h1>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="btnSearch" aria-label="Qidirish" title="Qidirish (⌘K)">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </button>
+        <button class="icon-btn" id="btnPrivacy" aria-label="Maxfiylik rejimi" title="Balanslarni yashirish">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="iconEye"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main view container — all pages render here -->
+    <main class="view" id="view" tabindex="-1"></main>
+
+    <!-- Floating action button -->
+    <button class="fab" id="fab" aria-label="Yangi tranzaksiya (N)" title="Yangi tranzaksiya (N)">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+
+    <!-- Bottom navigation (mobile) -->
+    <nav class="bottom-nav" id="bottomNav" aria-label="Asosiy navigatsiya">
+      <a href="#/" class="nav-item" data-route="/">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 22V12h6v10"/></svg>
+        <span>Bosh</span>
+      </a>
+      <a href="#/transactions" class="nav-item" data-route="/transactions">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        <span>Tarix</span>
+      </a>
+      <a href="#/add" class="nav-item nav-item-add" data-route="/add" aria-label="Qo'shish">
+        <span class="nav-add">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </span>
+      </a>
+      <a href="#/budget" class="nav-item" data-route="/budget">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <span>Byudjet</span>
+      </a>
+      <a href="#/more" class="nav-item" data-route="/more">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+        <span>Yana</span>
+      </a>
+    </nav>
+
+    <!-- Modal portal -->
+    <div class="portal" id="portal" aria-live="polite"></div>
+
+    <!-- Toast portal -->
+    <div class="toasts" id="toasts" aria-live="polite" aria-atomic="true"></div>
+  </div>
+
+  <!-- Onboarding portal (shown for first-time users) -->
+  <div id="onboarding" class="onboarding" hidden></div>
+
+  <!-- Templates -->
+  <template id="tpl-empty">
+    <div class="empty">
+      <div class="empty-glyph"></div>
+      <h3 class="empty-title"></h3>
+      <p class="empty-desc"></p>
+      <div class="empty-action"></div>
+    </div>
+  </template>
+
+  <!-- Chart.js (loaded async; charts render after) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+  <script defer src="confetti.js"></script>
+  <script defer src="app.js"></script>
+</body>
+</html>
