@@ -1,0 +1,55 @@
+{
+  "name": "Qiymat — Shaxsiy moliya boshqaruvi",
+  "short_name": "Qiymat",
+  "description": "Premium shaxsiy moliya menejeri. Daromad, xarajat, byudjet, jamg'arma — bir joyda.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "lang": "uz",
+  "dir": "ltr",
+  "categories": ["finance", "productivity", "lifestyle"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Yangi tranzaksiya",
+      "short_name": "Qo'shish",
+      "description": "Tezkor tranzaksiya qo'shish",
+      "url": "./#/add",
+      "icons": [{ "src": "icon.svg", "sizes": "any" }]
+    },
+    {
+      "name": "Hisobotlar",
+      "short_name": "Hisobot",
+      "description": "Tahlil va grafiklar",
+      "url": "./#/reports",
+      "icons": [{ "src": "icon.svg", "sizes": "any" }]
+    },
+    {
+      "name": "Byudjet",
+      "short_name": "Byudjet",
+      "description": "Oylik byudjet boshqaruvi",
+      "url": "./#/budget",
+      "icons": [{ "src": "icon.svg", "sizes": "any" }]
+    }
+  ],
+  "share_target": {
+    "action": "./",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
+  "prefer_related_applications": false
+}
