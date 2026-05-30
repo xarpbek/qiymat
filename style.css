@@ -497,6 +497,17 @@ body{
 
 /* -------- Transaction row -------- */
 .tx-list{ display: flex; flex-direction: column; }
+.tx-wrap{ position: relative; border-radius: var(--r); overflow: hidden; margin-bottom: 8px; }
+.tx-delete-bg{
+  position: absolute; inset: 0;
+  background: var(--danger);
+  color: #fff;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 22px;
+  border-radius: var(--r);
+  opacity: 0;
+  pointer-events: none;
+}
 .tx-day{ display:flex; align-items:center; gap: var(--s-3); padding: var(--s-4) 4px var(--s-2); }
 .tx-day .day{ font-size: 12px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: .08em; }
 .tx-day .day-total{ margin-left:auto; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
@@ -509,10 +520,10 @@ body{
   background: var(--surface);
   border: 1px solid var(--hairline);
   border-radius: var(--r);
-  margin-bottom: 8px;
-  transition: transform var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+  transition: transform var(--t-fast) var(--ease), background var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
   cursor: pointer;
   overflow: hidden;
+  touch-action: pan-y;
 }
 .tx::before{
   content:''; position: absolute; top: 0; left: 0; bottom: 0;

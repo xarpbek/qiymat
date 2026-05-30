@@ -406,9 +406,8 @@ const t = (key) => (I18N[State.lang()] && I18N[State.lang()][key]) || I18N.uz[ke
 /* ---------- Formatters ---------- */
 const Fmt = {
   number(n, opts={}){
-    const lang = State.lang();
-    const locale = lang === 'uz' ? 'uz-UZ' : (lang === 'ru' ? 'ru-RU' : 'en-US');
-    return new Intl.NumberFormat(locale, { maximumFractionDigits: 2, ...opts }).format(Number(n) || 0);
+    // Always group with commas (e.g. 5,000,000) per product spec, across all languages.
+    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2, ...opts }).format(Number(n) || 0);
   },
   money(n, currency){
     currency = currency || State.user().currency || 'UZS';
@@ -875,6 +874,12 @@ const Onboarding = (() => {
     State.addAccount({ name: draft.acc.name || at.name, type: at.id, balance: draft.acc.balance, currency: draft.currency, cls: at.cls });
     // Add demo data
     seedDemoData();
+    // Silently unlock achievements already earned via demo data (no toast spam)
+    try {
+      const s = State.raw();
+      ACHIEVEMENTS.forEach(a => { try { if (a.test(s) && !s.achievements.some(x=>x.id===a.id)) s.achievements.push({ id:a.id, unlockedAt: Date.now() }); } catch {} });
+      State.save();
+    } catch {}
     // Hide onboarding, start app
     node().hidden = true;
     Theme.apply();
@@ -895,31 +900,35 @@ const Onboarding = (() => {
 
 /* ---------- Modal ---------- */
 const Modal = (() => {
-  let stack = 0;
   const openHTML = (markup, opts={}) => {
     const portal = $('#portal');
     const scrim = el('div', { class:'scrim', onclick: opts.dismissOnScrim===false ? null : close });
     const wrap = el('div', { class:'modal' });
-    const card = el('div', { class:'modal-card', html: markup });
+    const card = el('div', { class:'modal-card', role:'dialog', 'aria-modal':'true', html: markup });
     wrap.append(card);
     portal.append(scrim, wrap);
-    stack++;
     document.body.style.overflow = 'hidden';
     // Escape to close
     const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
     document.addEventListener('keydown', onKey);
     card._onKey = onKey;
+    card._onClose = typeof opts.onClose === 'function' ? opts.onClose : null;
+    // Focus first focusable for a11y
+    setTimeout(() => { const f = card.querySelector('input,select,textarea,button'); f?.focus?.({ preventScroll:true }); }, 60);
     return card;
   };
   const close = () => {
     const portal = $('#portal');
     const card = portal.querySelector('.modal-card');
-    if (card?._onKey) document.removeEventListener('keydown', card._onKey);
+    if (!card) return;
+    const cb = card._onClose;
+    if (card._onKey) document.removeEventListener('keydown', card._onKey);
     portal.innerHTML = '';
-    stack = 0;
     document.body.style.overflow = '';
+    if (cb) cb();
   };
-  return { open: openHTML, close };
+  const isOpen = () => !!$('#portal').querySelector('.modal-card');
+  return { open: openHTML, close, isOpen };
 })();
 
 /* ---------- Helpers used by views ---------- */
@@ -1063,7 +1072,7 @@ function dashboardInsight(){
   return { emoji:'✨', text: 'Davom eting!' };
 }
 
-Router.register('/', (view) => {
+function renderDashboard(view){
   const accs = State.accounts();
   if (accs.length === 0){
     const btn = el('button', { class:'btn btn-primary' }, [t('add_account')]);
@@ -1176,7 +1185,7 @@ Router.register('/', (view) => {
   const recentBox = $('#dash_recent', view);
   if (recent.length === 0){
     const btn = el('button', { class:'btn btn-primary' }, [t('add_first')]);
-    btn.onclick = () => Router.navigate('/add');
+    btn.onclick = () => openAddTransaction();
     renderEmpty(recentBox, '📭', t('no_tx'), t('no_tx_desc'), btn);
   } else {
     recent.forEach(tx => recentBox.append(renderTxRow(tx)));
@@ -1276,13 +1285,19 @@ Router.register('/', (view) => {
       box.append(row);
     });
   }
-});
+}
+Router.register('/', renderDashboard);
 
 /* Render a single transaction row (reused in dashboard + transactions list) */
 function renderTxRow(tx){
   const c = Q.cat(tx.category);
   const a = Q.acc(tx.account);
   const sign = tx.type === 'income' ? '+' : (tx.type === 'expense' ? '−' : '↔');
+
+  const wrap = el('div', { class:'tx-wrap' });
+  const bg = el('div', { class:'tx-delete-bg', 'aria-hidden':'true' });
+  bg.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>`;
+
   const node = el('div', {
     class: 'tx',
     style: `--cat-color:${c.color}; --cat-soft:${c.color}22`,
@@ -1294,17 +1309,54 @@ function renderTxRow(tx){
       <div class="tx-sub">${escapeHtml(c.name)} · ${escapeHtml(a.name || '—')}</div>
     </div>
     <div class="tx-amount ${tx.type}">${sign} ${moneyHTML(tx.amount, tx.currency)}</div>`;
+
+  // Click to edit (suppressed right after a swipe)
+  let swiped = false;
   node.addEventListener('click', () => {
-    if (typeof Views.editTransaction === 'function') Views.editTransaction(tx.id);
-    else Router.navigate('/transactions');
+    if (swiped) { swiped = false; return; }
+    Views.editTransaction(tx.id);
   });
-  return node;
+
+  // Touch swipe-to-delete (mobile)
+  let startX = 0, startY = 0, dx = 0, dragging = false;
+  node.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    startX = e.touches[0].clientX; startY = e.touches[0].clientY; dragging = true; dx = 0;
+    node.style.transition = 'none';
+  }, { passive: true });
+  node.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const x = e.touches[0].clientX, y = e.touches[0].clientY;
+    if (Math.abs(y - startY) > Math.abs(x - startX)) { dragging = false; node.style.transform = ''; return; }
+    dx = Math.min(0, x - startX);
+    node.style.transform = `translateX(${Math.max(dx, -96)}px)`;
+    bg.style.opacity = String(Math.min(1, -dx / 80));
+  }, { passive: true });
+  node.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    node.style.transition = '';
+    if (dx < -72){
+      swiped = true;
+      node.style.transform = 'translateX(-100%)';
+      node.style.opacity = '0';
+      const id = tx.id;
+      Haptic.medium();
+      setTimeout(() => { State.removeTx(id); Toast.show(t('deleted')); Router.render(); }, 180);
+    } else {
+      node.style.transform = '';
+      bg.style.opacity = '0';
+    }
+  });
+
+  wrap.append(bg, node);
+  return wrap;
 }
 
 /* =========================================================
    ADD / EDIT TRANSACTION (modal-as-page)
    ========================================================= */
-Views.openTxEditor = function(existing){
+Views.openTxEditor = function(existing, opts={}){
   const isEdit = !!existing;
   const accs = State.accounts();
   if (accs.length === 0){
@@ -1411,7 +1463,7 @@ Views.openTxEditor = function(existing){
       <button class="btn" id="m_cancel">${escapeHtml(t('cancel'))}</button>
       <button class="btn btn-primary" id="m_save">${escapeHtml(t('save'))}</button>
     </div>
-  `);
+  `, { onClose: opts.onClose });
 
   // Helpers
   const calcEl = card.querySelector('#m_calc');
@@ -1446,7 +1498,7 @@ Views.openTxEditor = function(existing){
   }
 
   // Wire events
-  card.querySelector('#m_close').onclick = card.querySelector('#m_cancel').onclick = () => { Modal.close(); if (location.hash === '#/add') history.back(); };
+  card.querySelector('#m_close').onclick = card.querySelector('#m_cancel').onclick = () => Modal.close();
   card.querySelectorAll('#m_type button').forEach(b => b.onclick = () => { draft.type = b.dataset.v; renderType(); Haptic.light(); });
   card.querySelector('#m_acc').value = draft.account || accs[0]?.id;
   card.querySelector('#m_acc').onchange = e => draft.account = e.target.value;
@@ -1489,23 +1541,28 @@ Views.openTxEditor = function(existing){
 
   if (isEdit){
     card.querySelector('#m_dup').onclick = () => {
-      const copy = { ...existing }; delete copy.id; copy.date = today;
+      const copy = { ...existing }; delete copy.id; delete copy.createdAt; copy.date = today;
       State.addTx(copy);
       Audio_.success(); Haptic.success(); Toast.show(t('saved'), 'success');
-      Modal.close(); history.back();
+      Modal.close();
+      if (!opts.onClose) Router.render();
     };
     card.querySelector('#m_del').onclick = () => {
       State.removeTx(existing.id);
       Toast.show(t('deleted')); Haptic.medium();
-      Modal.close(); history.back();
+      Modal.close();
+      if (!opts.onClose) Router.render();
     };
   }
 
   card.querySelector('#m_save').onclick = () => {
-    if (!draft.amount || draft.amount <= 0){ Toast.show(t('enter_amount'), 'danger'); Haptic.error(); return; }
+    if (!draft.amount || draft.amount <= 0){ Toast.show(t('enter_amount'), 'danger'); Haptic.error(); Audio_.error(); return; }
     if (draft.type !== 'transfer' && !draft.category){ Toast.show(t('please_select_cat'), 'danger'); Haptic.error(); return; }
     if (!draft.account){ Toast.show(t('please_select_acc'), 'danger'); Haptic.error(); return; }
     if (draft.type === 'transfer' && (!draft.toAccount || draft.toAccount === draft.account)){ Toast.show('From ≠ To', 'danger'); Haptic.error(); return; }
+
+    // Normalize: transfers carry no category
+    if (draft.type === 'transfer') draft.category = null;
 
     if (isEdit){
       State.updateTx(existing.id, draft);
@@ -1515,15 +1572,14 @@ Views.openTxEditor = function(existing){
       if (draft.recurring){
         State.addRecurring({ name: draft.note || Q.cat(draft.category).name, amount: draft.amount, category: draft.category, account: draft.account, frequency: draft.recurring, nextDate: nextDateForFreq(draft.date, draft.recurring) });
       }
-      // Award XP
-      State.set(d => { d.user.xp = (d.user.xp || 0) + 5; if (d.user.xp >= d.user.level * 50) d.user.level += 1; });
-      // Goal milestone celebration on income
+      // Award XP + check achievements
+      State.set(d => { d.user.xp = (d.user.xp || 0) + 5; while (d.user.xp >= d.user.level * 50){ d.user.xp -= d.user.level * 50; d.user.level += 1; } });
       if (tx.type === 'income') Confetti?.fire?.({ count: 40 });
+      checkAchievements();
     }
     Audio_.success(); Haptic.success(); Toast.show(t('saved'), 'success');
     Modal.close();
-    if (location.hash === '#/add') history.back();
-    else Router.render();
+    if (!opts.onClose) Router.render();
   };
 
   renderType();
@@ -1548,11 +1604,22 @@ function nextDateForFreq(fromISO, freq){
   return Fmt.iso(d);
 }
 
-Router.register('/add', (view) => {
-  // /add is a "modal-as-route"; the body is essentially empty, modal is shown over current view
-  // Render dashboard underneath for nicer UX
-  view.innerHTML = '';
+/* Open the add-transaction editor as an overlay over the current page (FAB, nav, keyboard). */
+function openAddTransaction(){
+  if (State.accounts().length === 0){
+    Toast.show(t('no_acc'), 'danger');
+    Router.navigate('/accounts');
+    return;
+  }
   Views.openTxEditor(null);
+}
+
+Router.register('/add', (view) => {
+  // Deep-link / shortcut entry: render dashboard underneath, then open editor.
+  // On close (incl. scrim dismiss) return to dashboard so we never leave a blank page.
+  renderDashboard(view);
+  if (State.accounts().length === 0){ Router.navigate('/accounts'); return; }
+  Views.openTxEditor(null, { onClose: () => { if (Router.current() === '/add') Router.navigate('/'); } });
 });
 
 /* =========================================================
@@ -1593,7 +1660,7 @@ Router.register('/transactions', (view) => {
 
     if (items.length === 0){
       const btn = el('button', { class:'btn btn-primary' }, [t('add_first')]);
-      btn.onclick = () => Router.navigate('/add');
+      btn.onclick = () => openAddTransaction();
       renderEmpty(listBox, '🔎', t('no_tx'), t('no_tx_desc'), btn);
       return;
     }
@@ -1694,6 +1761,73 @@ function renderEmpty(parent, glyph, title, desc, action){
   parent.append(tpl);
 }
 
+/* =========================================================
+   ACHIEVEMENTS (gamification)
+   ========================================================= */
+const ACHIEVEMENTS = [
+  { id:'first_tx',    emoji:'✨', name:{uz:'Birinchi qadam', en:'First step', ru:'Первый шаг'}, test: s => s.transactions.length >= 1 },
+  { id:'first_save',  emoji:'💰', name:{uz:'Birinchi jamg\'arma', en:'First savings', ru:'Первые накопления'}, test: s => s.goals.some(g => g.current > 0) },
+  { id:'tracker_10',  emoji:'🎓', name:{uz:'10 ta yozuv', en:'10 entries', ru:'10 записей'}, test: s => s.transactions.length >= 10 },
+  { id:'tracker_30',  emoji:'📈', name:{uz:'30 ta yozuv', en:'30 entries', ru:'30 записей'}, test: s => s.transactions.length >= 30 },
+  { id:'budget_set',  emoji:'🎯', name:{uz:'Byudjetchi', en:'Budgeter', ru:'Бюджетник'}, test: s => s.budgets.length >= 1 },
+  { id:'goal_done',   emoji:'🏆', name:{uz:'Maqsadga yetdi', en:'Goal achiever', ru:'Цель достигнута'}, test: s => s.goals.some(g => g.achieved || g.current >= g.target) },
+  { id:'multi_acc',   emoji:'💳', name:{uz:'Ko\'p hisob', en:'Multi-account', ru:'Несколько счетов'}, test: s => s.accounts.filter(a=>!a.archived).length >= 3 },
+  { id:'saver_100k',  emoji:'💪', name:{uz:'100K jamg\'arma', en:'Saved 100K', ru:'Накоплено 100K'}, test: s => s.goals.reduce((x,g)=>x+Number(g.current||0),0) >= 100000 },
+  { id:'saver_1m',    emoji:'💎', name:{uz:'1M jamg\'arma', en:'Saved 1M', ru:'Накоплено 1M'}, test: s => s.goals.reduce((x,g)=>x+Number(g.current||0),0) >= 1000000 },
+  { id:'recurring_1', emoji:'🔁', name:{uz:'Obunalar', en:'Subscriptions', ru:'Подписки'}, test: s => s.recurring.length >= 1 },
+  { id:'income_in',   emoji:'🤑', name:{uz:'Daromad kirdi', en:'Income tracked', ru:'Доход учтён'}, test: s => s.transactions.some(t=>t.type==='income') },
+  { id:'level_5',     emoji:'🌟', name:{uz:'5-daraja', en:'Level 5', ru:'Уровень 5'}, test: s => (s.user.level||1) >= 5 },
+];
+
+function achName(a){ return a.name[State.lang()] || a.name.uz; }
+
+function checkAchievements(){
+  const s = State.raw();
+  const unlocked = new Set((s.achievements || []).map(a => a.id));
+  let newly = [];
+  ACHIEVEMENTS.forEach(a => {
+    if (!unlocked.has(a.id)){
+      let ok = false;
+      try { ok = a.test(s); } catch {}
+      if (ok){ s.achievements.push({ id: a.id, unlockedAt: Date.now() }); newly.push(a); }
+    }
+  });
+  if (newly.length){
+    State.save();
+    const a = newly[0];
+    Confetti?.fire?.({ count: 80 });
+    Audio_.success(); Haptic.success();
+    Toast.show(`${a.emoji} ${achName(a)}!`, 'success');
+  }
+  return newly;
+}
+
+/* =========================================================
+   RECURRING — auto-trigger due payments
+   ========================================================= */
+function processRecurring(){
+  const today = new Date(); today.setHours(23,59,59,999);
+  let added = 0;
+  State.recurring().forEach(r => {
+    if (!r.enabled || !r.nextDate) return;
+    if (!State.raw().accounts.find(a => a.id === r.account)) return; // account removed
+    let guard = 0;
+    while (new Date(r.nextDate) <= today && guard < 120){
+      State.addTx({
+        type: 'expense', amount: r.amount, category: r.category, account: r.account,
+        date: r.nextDate, note: r.name, currency: State.user().currency, fromRecurring: r.id
+      });
+      r.nextDate = nextDateForFreq(r.nextDate, r.frequency);
+      r.lastTriggered = Date.now();
+      added++; guard++;
+    }
+  });
+  if (added){
+    State.save();
+    Toast.show(`🔁 ${added} ${State.lang()==='en'?'recurring added':State.lang()==='ru'?'регулярных добавлено':'ta takroriy qo\'shildi'}`);
+  }
+}
+
 /* ---------- Boot ---------- */
 function buildSideRail(){
   const links = [
@@ -1727,7 +1861,10 @@ function buildSideRail(){
 
 function bindGlobalEvents(){
   // FAB
-  $('#fab').addEventListener('click', () => Router.navigate('/add'));
+  $('#fab').addEventListener('click', () => openAddTransaction());
+  // Bottom-nav "add" — overlay over the current page instead of navigating away
+  const navAdd = $('.nav-item-add');
+  if (navAdd) navAdd.addEventListener('click', (e) => { e.preventDefault(); openAddTransaction(); });
   // Topbar back
   $('#navBack').addEventListener('click', () => history.back());
   // Privacy toggle
@@ -1749,12 +1886,12 @@ function bindGlobalEvents(){
   document.addEventListener('keydown', (e) => {
     const tgt = e.target;
     if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
-    if (e.metaKey || e.ctrlKey) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (Modal.isOpen() || !$('#onboarding').hidden) return; // don't trigger behind modal / onboarding
     const k = e.key.toLowerCase();
-    if (k === 'n')  { e.preventDefault(); Router.navigate('/add'); }
+    if (k === 'n')  { e.preventDefault(); openAddTransaction(); }
     if (k === 't')  { Theme.setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'); }
     if (k === '?')  { Router.navigate('/settings'); }
-    if (k === 'escape') { /* handled by modal */ }
     // g + key sequences
     if (k === 'g'){
       const onSecond = (ev) => {
@@ -1790,6 +1927,8 @@ function init(){
   if (!State.user().onboarded){
     Onboarding.start();
   } else {
+    processRecurring();
+    checkAchievements();
     Router.render();
   }
 }
@@ -1919,6 +2058,7 @@ function openBudgetEditor(existing){
     if (!cat || !(lim > 0)){ Toast.show(t('enter_amount'), 'danger'); return; }
     State.setBudget(cat, lim);
     Toast.show(t('saved'), 'success'); Audio_.success(); Haptic.success();
+    checkAchievements();
     Modal.close();
     Router.render();
   };
@@ -2031,6 +2171,7 @@ function openGoalEditor(existing){
     if (existing) State.updateGoal(existing.id, data);
     else State.addGoal(data);
     Toast.show(t('saved'),'success'); Audio_.success();
+    checkAchievements();
     Modal.close(); Router.render();
   };
 }
@@ -2057,6 +2198,7 @@ function openGoalAddMoney(goal){
     } else {
       Toast.show(t('saved'),'success'); Audio_.success();
     }
+    checkAchievements();
     Router.render();
   };
   setTimeout(()=> card.querySelector('#ga_amt').focus(), 100);
@@ -2149,7 +2291,7 @@ function openAccountEditor(existing){
     if (!name){ Toast.show('Name?', 'danger'); return; }
     if (existing) State.updateAccount(existing.id, { name, balance: bal, currency: cur, type: typeId, cls: typeCls });
     else State.addAccount({ name, balance: bal, currency: cur, type: typeId, cls: typeCls });
-    Toast.show(t('saved'),'success'); Audio_.success(); Modal.close(); Router.render();
+    Toast.show(t('saved'),'success'); Audio_.success(); checkAchievements(); Modal.close(); Router.render();
   };
 }
 
@@ -2470,7 +2612,7 @@ function openRecurringEditor(existing){
     if (data.amount <= 0){ Toast.show(t('enter_amount'),'danger'); return; }
     if (existing) State.updateRecurring(existing.id, data);
     else State.addRecurring(data);
-    Toast.show(t('saved'),'success'); Audio_.success(); Modal.close(); Router.render();
+    Toast.show(t('saved'),'success'); Audio_.success(); checkAchievements(); Modal.close(); Router.render();
   };
 }
 
@@ -2544,17 +2686,32 @@ Router.register('/networth', (view) => {
    ========================================================= */
 Router.register('/insights', (view) => {
   const insights = computeInsights();
+
+  // Insights section
   if (insights.length === 0){
     renderEmpty(view, '✨', t('no_insights'), t('no_insights_desc'));
-    return;
+  } else {
+    const stack = el('div', { class:'stack', style:'margin-bottom:18px' });
+    insights.forEach(ins => {
+      const c = el('div', { class:'insight' });
+      c.innerHTML = `<span class="insight-emoji">${ins.emoji}</span><div><div class="label" style="margin-bottom:2px">${escapeHtml(ins.title || t('insight_of_day'))}</div><div style="font-size:14px;font-weight:600">${escapeHtml(ins.text)}</div></div>`;
+      stack.append(c);
+    });
+    view.append(stack);
   }
-  const stack = el('div', { class:'stack' });
-  insights.forEach(ins => {
-    const c = el('div', { class:'insight' });
-    c.innerHTML = `<span class="insight-emoji">${ins.emoji}</span><div><div class="label" style="margin-bottom:2px">${escapeHtml(ins.title || t('insight_of_day'))}</div><div style="font-size:14px;font-weight:600">${escapeHtml(ins.text)}</div></div>`;
-    stack.append(c);
+
+  // Achievements section
+  const unlocked = new Set((State.achievements() || []).map(a => a.id));
+  const card = el('div', { class:'card' });
+  card.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('achievements'))}</h3><span class="muted small">${unlocked.size}/${ACHIEVEMENTS.length}</span></div><div class="cat-grid" id="ins_ach"></div>`;
+  view.append(card);
+  const box = card.querySelector('#ins_ach');
+  ACHIEVEMENTS.forEach(a => {
+    const has = unlocked.has(a.id);
+    const tile = el('div', { class:'cat-tile', style: has ? '' : 'opacity:.4;filter:grayscale(1)' , title: achName(a) });
+    tile.innerHTML = `<span class="e" style="font-size:24px">${has ? a.emoji : '🔒'}</span><span class="n">${escapeHtml(achName(a))}</span>`;
+    box.append(tile);
   });
-  view.append(stack);
 });
 
 function computeInsights(){
