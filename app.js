@@ -1301,19 +1301,355 @@ function renderTxRow(tx){
   return node;
 }
 
-/* ---------- Other routes (still placeholders for now) ---------- */
-Router.register('/transactions', v => placeholder(v, t('transactions'), '...'));
-Router.register('/add',          v => placeholder(v, t('new_tx'), '...'));
-Router.register('/budget',       v => placeholder(v, t('budget'), '...'));
-Router.register('/goals',        v => placeholder(v, t('goals'), '...'));
-Router.register('/accounts',     v => placeholder(v, t('accounts'), '...'));
-Router.register('/reports',      v => placeholder(v, t('reports'), '...'));
-Router.register('/categories',   v => placeholder(v, t('categories'), '...'));
-Router.register('/recurring',    v => placeholder(v, t('recurring'), '...'));
-Router.register('/networth',     v => placeholder(v, t('networth'), '...'));
-Router.register('/insights',     v => placeholder(v, t('insights'), '...'));
-Router.register('/mini',         v => placeholder(v, t('mini'), '...'));
-Router.register('/settings',     v => placeholder(v, t('settings'), '...'));
+/* =========================================================
+   ADD / EDIT TRANSACTION (modal-as-page)
+   ========================================================= */
+Views.openTxEditor = function(existing){
+  const isEdit = !!existing;
+  const accs = State.accounts();
+  if (accs.length === 0){
+    Toast.show(t('no_acc'), 'danger');
+    Router.navigate('/accounts');
+    return;
+  }
+  // Working draft
+  const today = Fmt.iso(new Date());
+  const draft = existing ? { ...existing } : {
+    type: 'expense',
+    amount: 0,
+    currency: State.user().currency,
+    category: null,
+    account: accs[0]?.id,
+    toAccount: accs[1]?.id || null,
+    date: today,
+    note: '',
+    tags: [],
+    recurring: null,
+  };
+  let calcExpr = String(draft.amount || '').replace(/^0$/, '');
+
+  const cats = () => State.categories(draft.type === 'transfer' ? null : draft.type);
+  const accOpts = () => accs.map(a => `<option value="${a.id}">${escapeHtml(a.name)} · ${moneyShortText(a.balance)} ${escapeHtml(Fmt.currencySymbol(a.currency))}</option>`).join('');
+
+  function moneyShortText(n){
+    return Fmt.moneyShort(n);
+  }
+
+  const card = Modal.open(`
+    <div class="modal-h">
+      <button class="icon-btn" id="m_close" aria-label="${escapeHtml(t('close'))}">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <div class="title">${escapeHtml(isEdit ? t('edit_tx') : t('new_tx'))}</div>
+      ${isEdit ? `<button class="icon-btn" id="m_dup" aria-label="${escapeHtml(t('duplicate'))}" title="${escapeHtml(t('duplicate'))}">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>` : ''}
+    </div>
+    <div class="modal-body">
+      <div class="seg seg-${draft.type === 'income' ? 'income' : draft.type === 'expense' ? 'expense' : 'transfer'}" id="m_type" role="tablist">
+        <button data-v="income"   role="tab">${escapeHtml(t('income'))}</button>
+        <button data-v="expense"  role="tab">${escapeHtml(t('expense'))}</button>
+        <button data-v="transfer" role="tab">${escapeHtml(t('transfer'))}</button>
+      </div>
+
+      <div>
+        <div class="calc" id="m_calc">${moneyHTML(0, draft.currency)}</div>
+        <div class="calc-eval" id="m_eval">&nbsp;</div>
+        <div class="keypad" id="m_pad" style="margin-top:8px">
+          <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button><button data-k="op" class="op" data-op="/">÷</button>
+          <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button data-k="op" class="op" data-op="*">×</button>
+          <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button><button data-k="op" class="op" data-op="-">−</button>
+          <button data-k="000">000</button><button data-k="0">0</button><button data-k=".">.</button><button data-k="op" class="op" data-op="+">+</button>
+          <button data-k="back">⌫</button><button data-k="clear">C</button><button data-k="voice" id="m_voice">🎤</button><button data-k="ok" class="ok">=</button>
+        </div>
+      </div>
+
+      <div id="m_section_cat" class="field">
+        <label class="field-label">${escapeHtml(t('category'))}</label>
+        <div class="cat-grid" id="m_cats"></div>
+      </div>
+
+      <div id="m_section_accs">
+        <div class="grid grid-2">
+          <div class="field" id="m_field_from">
+            <label class="field-label">${escapeHtml(t('account'))}</label>
+            <select class="select" id="m_acc">${accOpts()}</select>
+          </div>
+          <div class="field" id="m_field_to" hidden>
+            <label class="field-label">${escapeHtml(t('transfer_to'))}</label>
+            <select class="select" id="m_acc_to">${accOpts()}</select>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-2">
+        <div class="field">
+          <label class="field-label">${escapeHtml(t('date'))}</label>
+          <input class="input" type="date" id="m_date" value="${escapeHtml(draft.date)}"/>
+        </div>
+        <div class="field">
+          <label class="field-label">${escapeHtml(t('frequency'))}</label>
+          <select class="select" id="m_rec">
+            <option value="">${escapeHtml(t('disabled'))}</option>
+            <option value="daily">${escapeHtml(t('daily'))}</option>
+            <option value="weekly">${escapeHtml(t('weekly'))}</option>
+            <option value="biweekly">${escapeHtml(t('biweekly'))}</option>
+            <option value="monthly">${escapeHtml(t('monthly'))}</option>
+            <option value="yearly">${escapeHtml(t('yearly'))}</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">${escapeHtml(t('note'))}</label>
+        <input class="input" id="m_note" placeholder="${escapeHtml(t('note_ph'))}" value="${escapeHtml(draft.note || '')}"/>
+      </div>
+    </div>
+    <div class="modal-foot">
+      ${isEdit ? `<button class="btn btn-danger" id="m_del">${escapeHtml(t('delete'))}</button>` : ''}
+      <span class="spacer"></span>
+      <button class="btn" id="m_cancel">${escapeHtml(t('cancel'))}</button>
+      <button class="btn btn-primary" id="m_save">${escapeHtml(t('save'))}</button>
+    </div>
+  `);
+
+  // Helpers
+  const calcEl = card.querySelector('#m_calc');
+  const evalEl = card.querySelector('#m_eval');
+  const renderCalc = () => {
+    const v = safeCalc(calcExpr || '0');
+    draft.amount = (v == null ? 0 : v);
+    calcEl.innerHTML = (calcExpr || '0').match(/[+\-*/]/) ? `<span class="num">${escapeHtml(calcExpr)}</span>` : moneyHTML(draft.amount, draft.currency);
+    evalEl.textContent = (calcExpr.match(/[+\-*/]/) && v != null) ? '= ' + Fmt.number(v) : '\u00A0';
+  };
+  const renderType = () => {
+    card.querySelectorAll('#m_type button').forEach(b => b.classList.toggle('is-active', b.dataset.v === draft.type));
+    card.querySelector('#m_type').className = `seg seg-${draft.type === 'income' ? 'income' : draft.type === 'expense' ? 'expense' : 'transfer'}`;
+    const isXfer = draft.type === 'transfer';
+    card.querySelector('#m_field_to').hidden = !isXfer;
+    card.querySelector('#m_section_cat').hidden = isXfer;
+    renderCats();
+  };
+  const renderCats = () => {
+    const box = card.querySelector('#m_cats'); box.innerHTML = '';
+    cats().forEach(c => {
+      const tile = el('button', { class: 'cat-tile' + (draft.category === c.id ? ' is-active' : ''), 'data-id': c.id });
+      tile.innerHTML = `<span class="e" style="background: ${c.color}1a;border-radius:50%;width:36px;height:36px;display:grid;place-items:center;font-size:20px">${c.emoji}</span><span class="n">${escapeHtml(c.name)}</span>`;
+      tile.onclick = () => { draft.category = c.id; renderCats(); Haptic.light(); };
+      box.append(tile);
+    });
+  };
+
+  // Set initial state from draft
+  if (draft.category) {/* keep */} else {
+    const list = cats(); if (list.length) draft.category = list[0].id;
+  }
+
+  // Wire events
+  card.querySelector('#m_close').onclick = card.querySelector('#m_cancel').onclick = () => { Modal.close(); if (location.hash === '#/add') history.back(); };
+  card.querySelectorAll('#m_type button').forEach(b => b.onclick = () => { draft.type = b.dataset.v; renderType(); Haptic.light(); });
+  card.querySelector('#m_acc').value = draft.account || accs[0]?.id;
+  card.querySelector('#m_acc').onchange = e => draft.account = e.target.value;
+  card.querySelector('#m_acc_to').value = draft.toAccount || accs[1]?.id || '';
+  card.querySelector('#m_acc_to').onchange = e => draft.toAccount = e.target.value;
+  card.querySelector('#m_date').onchange = e => draft.date = e.target.value;
+  card.querySelector('#m_note').oninput = e => draft.note = e.target.value;
+  card.querySelector('#m_rec').value = draft.recurring || '';
+  card.querySelector('#m_rec').onchange = e => draft.recurring = e.target.value || null;
+
+  // Keypad
+  card.querySelectorAll('#m_pad button').forEach(b => b.onclick = (e) => {
+    const k = b.dataset.k;
+    Audio_.tap(); Haptic.light();
+    if (k === 'back')  { calcExpr = calcExpr.slice(0, -1); }
+    else if (k === 'clear') { calcExpr = ''; }
+    else if (k === 'ok')    { const v = safeCalc(calcExpr || '0'); if (v != null) calcExpr = String(Math.abs(Math.round(v*100)/100)); }
+    else if (k === 'op')    { calcExpr += b.dataset.op; }
+    else if (k === 'voice') { startVoiceInput(); }
+    else { calcExpr += k; }
+    renderCalc();
+  });
+
+  // Voice input
+  function startVoiceInput(){
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR){ Toast.show('Voice input not supported', 'danger'); return; }
+    const rec = new SR();
+    rec.lang = State.lang() === 'ru' ? 'ru-RU' : (State.lang() === 'uz' ? 'uz-UZ' : 'en-US');
+    rec.maxAlternatives = 1;
+    rec.onresult = (ev) => {
+      const text = ev.results[0][0].transcript.replace(/[^\d.,]/g, '').replace(/,/g, '.');
+      const num = parseFloat(text);
+      if (!isNaN(num)) { calcExpr = String(num); renderCalc(); Audio_.success(); }
+    };
+    rec.onerror = () => Toast.show('Voice error', 'danger');
+    rec.start();
+    Toast.show('🎤 ...');
+  }
+
+  if (isEdit){
+    card.querySelector('#m_dup').onclick = () => {
+      const copy = { ...existing }; delete copy.id; copy.date = today;
+      State.addTx(copy);
+      Audio_.success(); Haptic.success(); Toast.show(t('saved'), 'success');
+      Modal.close(); history.back();
+    };
+    card.querySelector('#m_del').onclick = () => {
+      State.removeTx(existing.id);
+      Toast.show(t('deleted')); Haptic.medium();
+      Modal.close(); history.back();
+    };
+  }
+
+  card.querySelector('#m_save').onclick = () => {
+    if (!draft.amount || draft.amount <= 0){ Toast.show(t('enter_amount'), 'danger'); Haptic.error(); return; }
+    if (draft.type !== 'transfer' && !draft.category){ Toast.show(t('please_select_cat'), 'danger'); Haptic.error(); return; }
+    if (!draft.account){ Toast.show(t('please_select_acc'), 'danger'); Haptic.error(); return; }
+    if (draft.type === 'transfer' && (!draft.toAccount || draft.toAccount === draft.account)){ Toast.show('From ≠ To', 'danger'); Haptic.error(); return; }
+
+    if (isEdit){
+      State.updateTx(existing.id, draft);
+    } else {
+      const tx = State.addTx(draft);
+      // Recurring registration
+      if (draft.recurring){
+        State.addRecurring({ name: draft.note || Q.cat(draft.category).name, amount: draft.amount, category: draft.category, account: draft.account, frequency: draft.recurring, nextDate: nextDateForFreq(draft.date, draft.recurring) });
+      }
+      // Award XP
+      State.set(d => { d.user.xp = (d.user.xp || 0) + 5; if (d.user.xp >= d.user.level * 50) d.user.level += 1; });
+      // Goal milestone celebration on income
+      if (tx.type === 'income') Confetti?.fire?.({ count: 40 });
+    }
+    Audio_.success(); Haptic.success(); Toast.show(t('saved'), 'success');
+    Modal.close();
+    if (location.hash === '#/add') history.back();
+    else Router.render();
+  };
+
+  renderType();
+  renderCalc();
+};
+
+Views.editTransaction = function(id){
+  const tx = State.transactions().find(t => t.id === id);
+  if (!tx) return;
+  Views.openTxEditor(tx);
+};
+
+function nextDateForFreq(fromISO, freq){
+  const d = new Date(fromISO);
+  switch (freq){
+    case 'daily':    d.setDate(d.getDate()+1); break;
+    case 'weekly':   d.setDate(d.getDate()+7); break;
+    case 'biweekly': d.setDate(d.getDate()+14); break;
+    case 'monthly':  d.setMonth(d.getMonth()+1); break;
+    case 'yearly':   d.setFullYear(d.getFullYear()+1); break;
+  }
+  return Fmt.iso(d);
+}
+
+Router.register('/add', (view) => {
+  // /add is a "modal-as-route"; the body is essentially empty, modal is shown over current view
+  // Render dashboard underneath for nicer UX
+  view.innerHTML = '';
+  Views.openTxEditor(null);
+});
+
+/* =========================================================
+   TRANSACTIONS LIST
+   ========================================================= */
+Router.register('/transactions', (view) => {
+  const filtersBar = el('div', { class:'card', style:'margin-bottom:12px;display:flex;flex-direction:column;gap:10px' });
+  filtersBar.innerHTML = `
+    <input class="input input-search" id="tx_search" type="search" placeholder="${escapeHtml(t('search_ph'))}"/>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="chip is-active" data-f="all">${escapeHtml(t('all'))}</button>
+      <button class="chip" data-f="income">${escapeHtml(t('income'))}</button>
+      <button class="chip" data-f="expense">${escapeHtml(t('expense'))}</button>
+      <button class="chip" data-f="transfer">${escapeHtml(t('transfer'))}</button>
+      <span style="flex:1"></span>
+      <button class="chip" id="tx_export">${escapeHtml(t('export'))} CSV</button>
+    </div>`;
+  view.append(filtersBar);
+
+  const listBox = el('div', { class:'tx-list' });
+  view.append(listBox);
+
+  let filter = 'all';
+  let search = '';
+
+  function render(){
+    listBox.innerHTML = '';
+    const all = State.transactions();
+    const items = all
+      .filter(t => filter === 'all' ? true : t.type === filter)
+      .filter(t => {
+        if (!search) return true;
+        const q = search.toLowerCase();
+        const c = Q.cat(t.category);
+        const a = Q.acc(t.account);
+        return (t.note||'').toLowerCase().includes(q) || c.name.toLowerCase().includes(q) || (a.name||'').toLowerCase().includes(q) || String(t.amount).includes(q);
+      });
+
+    if (items.length === 0){
+      const btn = el('button', { class:'btn btn-primary' }, [t('add_first')]);
+      btn.onclick = () => Router.navigate('/add');
+      renderEmpty(listBox, '🔎', t('no_tx'), t('no_tx_desc'), btn);
+      return;
+    }
+
+    // Group by day
+    const groups = new Map();
+    for (const t of items){
+      const k = t.date;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(t);
+    }
+    const sortedKeys = [...groups.keys()].sort((a,b) => b.localeCompare(a));
+    sortedKeys.forEach(k => {
+      const list = groups.get(k);
+      const inc = Q.sum(list, 'income');
+      const exp = Q.sum(list, 'expense');
+      const net = inc - exp;
+      const head = el('div', { class:'tx-day' });
+      head.innerHTML = `
+        <span class="day">${escapeHtml(Fmt.dayLabel(k))}</span>
+        <span class="day-total ${net >= 0 ? 'delta-up' : 'delta-down'}" style="margin-left:auto">${net >= 0 ? '+' : '−'} ${Fmt.moneyShort(Math.abs(net))}</span>`;
+      listBox.append(head);
+      list.forEach(tx => listBox.append(renderTxRow(tx)));
+    });
+  }
+
+  filtersBar.querySelectorAll('[data-f]').forEach(b => b.onclick = () => {
+    filter = b.dataset.f;
+    filtersBar.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('is-active', x === b));
+    render();
+  });
+  let to = 0;
+  filtersBar.querySelector('#tx_search').oninput = (e) => {
+    clearTimeout(to); to = setTimeout(() => { search = e.target.value; render(); }, 180);
+  };
+  filtersBar.querySelector('#tx_export').onclick = exportCSV;
+
+  render();
+});
+
+function exportCSV(){
+  const txs = State.transactions();
+  const header = ['date','type','amount','currency','category','account','note'];
+  const rows = txs.map(t => [
+    t.date, t.type, t.amount, t.currency || State.user().currency,
+    (Q.cat(t.category).name || ''), (Q.acc(t.account).name || ''), (t.note || '')
+  ]);
+  const csv = [header, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `qiymat-${Fmt.iso(new Date())}.csv`;
+  document.body.append(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  Toast.show(t('saved'), 'success');
+}
 
 /* "More" menu (mobile) — tiles for everything */
 Router.register('/more', (view) => {
@@ -1460,3 +1796,1118 @@ function init(){
 
 document.addEventListener('DOMContentLoaded', init);
 window.Qiymat = { State, Router, Theme, Toast, Haptic, Audio_, Modal, Q, Fmt, t, I18N };
+
+
+
+/* =========================================================
+   BUDGET
+   ========================================================= */
+Router.register('/budget', (view) => {
+  const monthR = Q.monthRange();
+  const monthName = Fmt.monthLabel(new Date());
+  const incM = Q.sum(Q.txInRange(monthR.start, monthR.end), 'income');
+  const expM = Q.sum(Q.txInRange(monthR.start, monthR.end), 'expense');
+  const monthBuds = State.budgets().filter(b => b.month === new Date().getMonth() && b.year === new Date().getFullYear());
+  const totalBudget = monthBuds.reduce((s,b) => s+Number(b.limit||0), 0);
+  const spentInBudget = monthBuds.reduce((s,b) => {
+    const v = Q.txInRange(monthR.start, monthR.end).filter(t=>t.type==='expense' && t.category===b.category).reduce((x,t)=>x+Number(t.amount||0),0);
+    return s + v;
+  }, 0);
+  const allowance = totalBudget > 0 ? Math.max(0, (totalBudget - spentInBudget) / Math.max(1, daysLeftInMonth())) : 0;
+
+  // Header card
+  const head = el('section', { class:'hero', style:'margin-bottom:14px' });
+  const usedPct = totalBudget > 0 ? Math.min(100, Math.round((spentInBudget/totalBudget)*100)) : 0;
+  head.innerHTML = `
+    <div class="hero-row">
+      <div>
+        <div class="hero-label">${escapeHtml(monthName)} · ${escapeHtml(t('monthly_budget'))}</div>
+        <div class="hero-balance balance">${moneyHTML(spentInBudget)} <span class="cur" style="opacity:.6">/ ${moneyHTML(totalBudget)}</span></div>
+      </div>
+    </div>
+    <div class="progress ${usedPct>=100?'danger':usedPct>=80?'warning':'success'}" style="margin-top:14px"><div class="progress-fill" style="width:${usedPct}%"></div></div>
+    <div class="hero-meta">
+      <span class="pill"><span class="dot dot-info"></span>${escapeHtml(t('daily_allowance'))}: <strong>${moneyHTML(allowance)}</strong></span>
+      ${incM > 0 ? `<span class="pill"><span class="dot dot-success"></span>50/30/20 · 50%: <strong>${moneyHTML(incM*0.5)}</strong></span>` : ''}
+    </div>`;
+  view.append(head);
+
+  // Add budget button row
+  const actions = el('div', { class:'row', style:'margin-bottom:12px;gap:8px' });
+  const btnAdd = el('button', { class:'btn btn-primary' }, ['＋ ' + t('set_budget')]);
+  btnAdd.onclick = () => openBudgetEditor();
+  const btn503020 = el('button', { class:'btn' }, ['50/30/20']);
+  btn503020.onclick = () => apply503020(incM);
+  actions.append(btnAdd, btn503020);
+  view.append(actions);
+
+  // Per-category budget cards
+  if (monthBuds.length === 0){
+    const btn = el('button', { class:'btn btn-primary' }, [t('add_first')]);
+    btn.onclick = () => openBudgetEditor();
+    renderEmpty(view, '🎯', t('no_budget'), t('no_budget_desc'), btn);
+    return;
+  }
+
+  const grid = el('div', { class:'grid grid-2' });
+  monthBuds.forEach(b => {
+    const c = Q.cat(b.category);
+    const spent = Q.txInRange(monthR.start, monthR.end).filter(t=>t.type==='expense' && t.category===b.category).reduce((s,t)=>s+Number(t.amount||0),0);
+    const pct = Math.min(100, Math.round((spent / Math.max(1, b.limit)) * 100));
+    const cls = pct >= 100 ? 'danger' : pct >= 80 ? 'warning' : 'success';
+    const r = 30, C = 2*Math.PI*r;
+    const off = C - (pct/100)*C;
+    const card = el('div', { class:'card', style:'cursor:pointer' });
+    card.innerHTML = `
+      <div class="row">
+        <svg class="ring" width="76" height="76" viewBox="0 0 76 76">
+          <circle class="ring-bg" cx="38" cy="38" r="${r}" fill="none" stroke-width="8"/>
+          <circle class="ring-fg ${cls}" cx="38" cy="38" r="${r}" fill="none" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 38 38)"/>
+          <text x="38" y="42" text-anchor="middle" font-size="13" font-weight="700" fill="currentColor">${pct}%</text>
+        </svg>
+        <div style="min-width:0;flex:1">
+          <div style="font-weight:700;font-size:15px">${c.emoji} ${escapeHtml(c.name)}</div>
+          <div class="muted small">${moneyHTML(spent)} ${escapeHtml(t('of'))} ${moneyHTML(b.limit)}</div>
+          <div class="small" style="margin-top:4px;color:${pct>=100?'var(--danger)':pct>=80?'var(--warning)':'var(--success)'};font-weight:600">${pct >= 100 ? t('over_budget') : Fmt.moneyShort(b.limit-spent) + ' qoldi'}</div>
+        </div>
+      </div>`;
+    card.onclick = () => openBudgetEditor(b);
+    grid.append(card);
+  });
+  view.append(grid);
+});
+
+function daysLeftInMonth(){
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth()+1, 0).getDate() - d.getDate() + 1;
+}
+
+function openBudgetEditor(existing){
+  const expCats = State.categories('expense');
+  const card = Modal.open(`
+    <div class="modal-h">
+      <div class="title">${escapeHtml(existing ? t('edit') : t('set_budget'))}</div>
+      <button class="icon-btn" id="mb_close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label class="field-label">${escapeHtml(t('category'))}</label>
+        <select class="select" id="mb_cat" ${existing?'disabled':''}>
+          ${expCats.map(c => `<option value="${c.id}" ${existing && existing.category === c.id ? 'selected' : ''}>${c.emoji} ${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label">${escapeHtml(t('limit'))} (${escapeHtml(State.user().currency)})</label>
+        <input class="input" type="number" inputmode="decimal" id="mb_limit" value="${existing?existing.limit:''}" step="0.01"/>
+      </div>
+    </div>
+    <div class="modal-foot">
+      ${existing ? `<button class="btn btn-danger" id="mb_del">${escapeHtml(t('delete'))}</button>` : ''}
+      <span class="spacer"></span>
+      <button class="btn" id="mb_cancel">${escapeHtml(t('cancel'))}</button>
+      <button class="btn btn-primary" id="mb_save">${escapeHtml(t('save'))}</button>
+    </div>
+  `);
+  card.querySelector('#mb_cancel').onclick = card.querySelector('#mb_close').onclick = () => Modal.close();
+  if (existing){
+    card.querySelector('#mb_del').onclick = () => { State.removeBudget(existing.id); Modal.close(); Router.render(); Toast.show(t('deleted')); };
+  }
+  card.querySelector('#mb_save').onclick = () => {
+    const cat = card.querySelector('#mb_cat').value;
+    const lim = parseFloat(card.querySelector('#mb_limit').value);
+    if (!cat || !(lim > 0)){ Toast.show(t('enter_amount'), 'danger'); return; }
+    State.setBudget(cat, lim);
+    Toast.show(t('saved'), 'success'); Audio_.success(); Haptic.success();
+    Modal.close();
+    Router.render();
+  };
+  setTimeout(()=> card.querySelector('#mb_limit').focus(), 100);
+}
+
+function apply503020(income){
+  if (!(income > 0)){ Toast.show(t('no_data'), 'danger'); return; }
+  const needs = ['c_food','c_home','c_util','c_transport','c_health','c_phone'];
+  const wants = ['c_fun','c_cafe','c_shop','c_clothes','c_beauty'];
+  const totalNeeds = income * 0.5; const totalWants = income * 0.3;
+  needs.forEach(c => State.setBudget(c, Math.round(totalNeeds / needs.length / 1000) * 1000));
+  wants.forEach(c => State.setBudget(c, Math.round(totalWants / wants.length / 1000) * 1000));
+  Toast.show('50/30/20 ' + t('saved'), 'success'); Audio_.success(); Confetti?.fire?.({ count: 40 });
+  Router.render();
+}
+
+/* =========================================================
+   GOALS
+   ========================================================= */
+Router.register('/goals', (view) => {
+  const goals = State.goals();
+  const head = el('div', { class:'row row-between', style:'margin-bottom:12px' });
+  head.innerHTML = `<h2 class="h-display" style="font-size:24px">${escapeHtml(t('goals'))}</h2>`;
+  const btn = el('button', { class:'btn btn-primary' }, ['＋ ' + t('add_goal')]);
+  btn.onclick = () => openGoalEditor();
+  head.append(btn);
+  view.append(head);
+
+  if (goals.length === 0){
+    const b = el('button', { class:'btn btn-primary' }, [t('add_first')]);
+    b.onclick = () => openGoalEditor();
+    renderEmpty(view, '💎', t('no_goals'), t('no_goals_desc'), b);
+    return;
+  }
+
+  const grid = el('div', { class:'grid grid-2' });
+  goals.forEach(g => {
+    const pct = Math.min(100, Math.round((g.current / Math.max(1, g.target)) * 100));
+    const left = Math.max(0, g.target - g.current);
+    const daysLeft = g.deadline ? Math.max(0, Math.round((new Date(g.deadline) - new Date()) / 86400000)) : null;
+    const perDay = (daysLeft && daysLeft > 0) ? left / daysLeft : null;
+    const card = el('div', { class:'goal', style:`--g1:${g.color || 'var(--accent)'}` });
+    card.innerHTML = `
+      <div class="row">
+        <span class="goal-emoji">${g.icon || '🎯'}</span>
+        <div style="min-width:0;flex:1">
+          <div class="goal-title">${escapeHtml(g.name)}</div>
+          <div class="goal-meta">${g.deadline ? Fmt.date(g.deadline) : ''}${daysLeft != null ? ' · ' + daysLeft + ' ' + t('days') : ''}</div>
+        </div>
+      </div>
+      <div class="goal-amt amount" style="margin:10px 0 4px">${moneyHTML(g.current)} <span style="opacity:.5;font-family:var(--font-ui);font-size:14px">/ ${moneyHTML(g.target)}</span></div>
+      <div class="progress ${pct>=100?'success':''}"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">
+        <span class="chip ${pct>=100?'chip-success':''}">${pct}%</span>
+        ${perDay != null ? `<span class="chip">${Fmt.moneyShort(perDay)}/${escapeHtml(t('today_').toLowerCase())}</span>` : ''}
+        <span class="spacer"></span>
+        <button class="btn btn-sm" data-add>＋ ${escapeHtml(t('add_money'))}</button>
+        <button class="btn btn-sm btn-ghost" data-edit>${escapeHtml(t('edit'))}</button>
+      </div>`;
+    card.querySelector('[data-add]').onclick = (e) => { e.stopPropagation(); openGoalAddMoney(g); };
+    card.querySelector('[data-edit]').onclick = (e) => { e.stopPropagation(); openGoalEditor(g); };
+    grid.append(card);
+  });
+  view.append(grid);
+});
+
+function openGoalEditor(existing){
+  const card = Modal.open(`
+    <div class="modal-h">
+      <div class="title">${escapeHtml(existing ? t('edit') : t('new_goal'))}</div>
+      <button class="icon-btn" id="g_close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label class="field-label">${escapeHtml(t('select_emoji'))}</label>
+        <div class="cat-grid" id="g_emos">
+          ${GOAL_ICONS.map(em => `<button class="cat-tile ${(existing?.icon||'🎯')===em?'is-active':''}" data-em="${em}"><span class="e">${em}</span></button>`).join('')}
+        </div>
+      </div>
+      <div class="field"><label class="field-label">${escapeHtml(t('goal_name'))}</label><input class="input" id="g_name" value="${escapeHtml(existing?.name||'')}"/></div>
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">${escapeHtml(t('target'))}</label><input class="input" type="number" inputmode="decimal" id="g_target" value="${existing?.target||''}"/></div>
+        <div class="field"><label class="field-label">${escapeHtml(t('current'))}</label><input class="input" type="number" inputmode="decimal" id="g_current" value="${existing?.current||0}"/></div>
+      </div>
+      <div class="field"><label class="field-label">${escapeHtml(t('deadline'))}</label><input class="input" type="date" id="g_deadline" value="${existing?.deadline||''}"/></div>
+    </div>
+    <div class="modal-foot">
+      ${existing ? `<button class="btn btn-danger" id="g_del">${escapeHtml(t('delete'))}</button>` : ''}
+      <span class="spacer"></span>
+      <button class="btn" id="g_cancel">${escapeHtml(t('cancel'))}</button>
+      <button class="btn btn-primary" id="g_save">${escapeHtml(t('save'))}</button>
+    </div>
+  `);
+  let emo = existing?.icon || '🎯';
+  card.querySelectorAll('#g_emos .cat-tile').forEach(b => b.onclick = () => {
+    emo = b.dataset.em;
+    card.querySelectorAll('#g_emos .cat-tile').forEach(x => x.classList.toggle('is-active', x === b));
+  });
+  card.querySelector('#g_cancel').onclick = card.querySelector('#g_close').onclick = () => Modal.close();
+  if (existing) card.querySelector('#g_del').onclick = () => { State.removeGoal(existing.id); Toast.show(t('deleted')); Modal.close(); Router.render(); };
+  card.querySelector('#g_save').onclick = () => {
+    const data = {
+      name: card.querySelector('#g_name').value || 'Goal',
+      target: parseFloat(card.querySelector('#g_target').value) || 0,
+      current: parseFloat(card.querySelector('#g_current').value) || 0,
+      deadline: card.querySelector('#g_deadline').value || null,
+      icon: emo, color: '#7c3aed',
+    };
+    if (data.target <= 0){ Toast.show(t('enter_amount'),'danger'); return; }
+    if (existing) State.updateGoal(existing.id, data);
+    else State.addGoal(data);
+    Toast.show(t('saved'),'success'); Audio_.success();
+    Modal.close(); Router.render();
+  };
+}
+
+function openGoalAddMoney(goal){
+  const card = Modal.open(`
+    <div class="modal-h"><div class="title">${escapeHtml(t('add_money'))} · ${escapeHtml(goal.name)}</div><button class="icon-btn" id="ga_close">✕</button></div>
+    <div class="modal-body">
+      <div class="field"><label class="field-label">${escapeHtml(t('amount'))}</label><input class="input" type="number" inputmode="decimal" id="ga_amt" autofocus/></div>
+    </div>
+    <div class="modal-foot"><span class="spacer"></span><button class="btn" id="ga_cancel">${escapeHtml(t('cancel'))}</button><button class="btn btn-primary" id="ga_save">${escapeHtml(t('save'))}</button></div>
+  `);
+  card.querySelector('#ga_cancel').onclick = card.querySelector('#ga_close').onclick = () => Modal.close();
+  card.querySelector('#ga_save').onclick = () => {
+    const amt = parseFloat(card.querySelector('#ga_amt').value) || 0;
+    if (amt <= 0){ Toast.show(t('enter_amount'),'danger'); return; }
+    const newCur = goal.current + amt;
+    const reached = newCur >= goal.target;
+    State.updateGoal(goal.id, { current: newCur, achieved: reached || goal.achieved });
+    Modal.close();
+    if (reached){
+      Confetti?.fire?.({ count: 140 }); Audio_.success(); Haptic.success();
+      Toast.show('🎉 ' + t('confetti_msg'), 'success');
+    } else {
+      Toast.show(t('saved'),'success'); Audio_.success();
+    }
+    Router.render();
+  };
+  setTimeout(()=> card.querySelector('#ga_amt').focus(), 100);
+}
+
+/* =========================================================
+   ACCOUNTS — Apple Wallet style
+   ========================================================= */
+Router.register('/accounts', (view) => {
+  const accs = State.accounts(true);
+  const total = Q.totalBalance();
+
+  const head = el('section', { class:'hero', style:'margin-bottom:14px' });
+  head.innerHTML = `
+    <div class="hero-row">
+      <div>
+        <div class="hero-label">${escapeHtml(t('total_balance'))}</div>
+        <div class="hero-balance balance">${moneyHTML(total)}</div>
+      </div>
+    </div>`;
+  view.append(head);
+
+  const actions = el('div', { class:'row', style:'margin-bottom:12px;gap:8px' });
+  const btn = el('button', { class:'btn btn-primary' }, ['＋ ' + t('add_account')]);
+  btn.onclick = () => openAccountEditor();
+  const xfer = el('button', { class:'btn' }, ['↔ ' + t('transfer')]);
+  xfer.onclick = () => openTransferModal();
+  actions.append(btn, xfer);
+  view.append(actions);
+
+  if (accs.length === 0){
+    const b = el('button', { class:'btn btn-primary' }, [t('add_first')]);
+    b.onclick = () => openAccountEditor();
+    renderEmpty(view, '💳', t('no_acc'), '...', b);
+    return;
+  }
+
+  const stack = el('div', { class:'wallet' });
+  accs.forEach(a => {
+    const tinfo = ACCOUNT_TYPES.find(x => x.id === a.type) || ACCOUNT_TYPES[0];
+    const card = el('div', { class: `wallet-card ${a.cls || tinfo.cls}` + (a.archived ? ' is-archived' : '') });
+    card.innerHTML = `
+      <div class="row">
+        <div style="font-size:22px">${tinfo.emoji}</div>
+        <div style="flex:1">
+          <div class="wallet-name">${escapeHtml(a.name)}</div>
+          <div class="wallet-type">${escapeHtml(tinfo.name)} · ${escapeHtml(a.currency || State.user().currency)}</div>
+        </div>
+      </div>
+      <div class="wallet-bal balance">${moneyHTML(a.balance, a.currency)}</div>
+      <div class="wallet-foot">
+        <span>${a.archived ? '📦 ' + escapeHtml(t('archived')) : '●●●● ' + (a.id || '').slice(-4)}</span>
+      </div>`;
+    card.onclick = () => openAccountEditor(a);
+    stack.append(card);
+  });
+  view.append(stack);
+});
+
+function openAccountEditor(existing){
+  const card = Modal.open(`
+    <div class="modal-h"><div class="title">${escapeHtml(existing ? t('edit') : t('new_account'))}</div><button class="icon-btn" id="ae_close">✕</button></div>
+    <div class="modal-body">
+      <div class="field"><label class="field-label">${escapeHtml(t('type'))}</label>
+        <div class="cat-grid" id="ae_types">
+          ${ACCOUNT_TYPES.map(at => `<button class="cat-tile ${(existing?.type||'cash')===at.id?'is-active':''}" data-id="${at.id}" data-cls="${at.cls}"><span class="e">${at.emoji}</span><span class="n">${escapeHtml(at.name)}</span></button>`).join('')}
+        </div>
+      </div>
+      <div class="field"><label class="field-label">${escapeHtml(t('acc_name'))}</label><input class="input" id="ae_name" value="${escapeHtml(existing?.name||'')}"/></div>
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">${escapeHtml(existing ? t('current') : t('start_balance'))}</label><input class="input" type="number" inputmode="decimal" id="ae_bal" value="${existing?.balance ?? 0}" step="0.01"/></div>
+        <div class="field"><label class="field-label">${escapeHtml(t('select_currency'))}</label><select class="select" id="ae_cur">${SUPPORTED_CURRENCIES.map(c => `<option value="${c}" ${(existing?.currency||State.user().currency)===c?'selected':''}>${c}</option>`).join('')}</select></div>
+      </div>
+      ${existing ? `<button class="btn ${existing.archived?'btn-success':''}" id="ae_arc">${escapeHtml(existing.archived ? 'Unarchive' : t('archive'))}</button>` : ''}
+    </div>
+    <div class="modal-foot"><span class="spacer"></span><button class="btn" id="ae_cancel">${escapeHtml(t('cancel'))}</button><button class="btn btn-primary" id="ae_save">${escapeHtml(t('save'))}</button></div>
+  `);
+  let typeId = existing?.type || 'cash';
+  let typeCls = existing?.cls || 'c-cash';
+  card.querySelectorAll('#ae_types .cat-tile').forEach(b => b.onclick = () => {
+    typeId = b.dataset.id; typeCls = b.dataset.cls;
+    card.querySelectorAll('#ae_types .cat-tile').forEach(x => x.classList.toggle('is-active', x === b));
+  });
+  card.querySelector('#ae_cancel').onclick = card.querySelector('#ae_close').onclick = () => Modal.close();
+  if (existing) card.querySelector('#ae_arc').onclick = () => { State.updateAccount(existing.id, { archived: !existing.archived }); Modal.close(); Router.render(); };
+  card.querySelector('#ae_save').onclick = () => {
+    const name = card.querySelector('#ae_name').value;
+    const bal  = parseFloat(card.querySelector('#ae_bal').value) || 0;
+    const cur  = card.querySelector('#ae_cur').value;
+    if (!name){ Toast.show('Name?', 'danger'); return; }
+    if (existing) State.updateAccount(existing.id, { name, balance: bal, currency: cur, type: typeId, cls: typeCls });
+    else State.addAccount({ name, balance: bal, currency: cur, type: typeId, cls: typeCls });
+    Toast.show(t('saved'),'success'); Audio_.success(); Modal.close(); Router.render();
+  };
+}
+
+function openTransferModal(){
+  const accs = State.accounts();
+  if (accs.length < 2){ Toast.show('Need 2 accounts','danger'); return; }
+  const card = Modal.open(`
+    <div class="modal-h"><div class="title">${escapeHtml(t('transfer'))}</div><button class="icon-btn" id="tr_close">✕</button></div>
+    <div class="modal-body">
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">${escapeHtml(t('transfer_from'))}</label><select class="select" id="tr_from">${accs.map(a=>`<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}</select></div>
+        <div class="field"><label class="field-label">${escapeHtml(t('transfer_to'))}</label><select class="select" id="tr_to">${accs.map((a,i)=>`<option value="${a.id}" ${i===1?'selected':''}>${escapeHtml(a.name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label class="field-label">${escapeHtml(t('amount'))}</label><input class="input" type="number" inputmode="decimal" id="tr_amt" autofocus/></div>
+    </div>
+    <div class="modal-foot"><span class="spacer"></span><button class="btn" id="tr_cancel">${escapeHtml(t('cancel'))}</button><button class="btn btn-primary" id="tr_save">${escapeHtml(t('save'))}</button></div>
+  `);
+  card.querySelector('#tr_cancel').onclick = card.querySelector('#tr_close').onclick = () => Modal.close();
+  card.querySelector('#tr_save').onclick = () => {
+    const from = card.querySelector('#tr_from').value;
+    const to   = card.querySelector('#tr_to').value;
+    const amt  = parseFloat(card.querySelector('#tr_amt').value) || 0;
+    if (amt <= 0){ Toast.show(t('enter_amount'),'danger'); return; }
+    if (from === to){ Toast.show('From ≠ To','danger'); return; }
+    State.addTx({ type:'transfer', amount: amt, account: from, toAccount: to, date: Fmt.iso(new Date()), category:null, currency: State.user().currency });
+    Toast.show(t('transfer_done'),'success'); Audio_.success(); Haptic.success();
+    Modal.close(); Router.render();
+  };
+}
+
+/* =========================================================
+   REPORTS / ANALYTICS
+   ========================================================= */
+Router.register('/reports', (view) => {
+  // Period selector
+  let period = 30;
+  const seg = el('div', { class:'seg', style:'max-width:360px;margin-bottom:14px' });
+  seg.innerHTML = `<button data-p="7">${escapeHtml(t('last_7'))}</button><button data-p="30" class="is-active">${escapeHtml(t('last_30'))}</button><button data-p="90">${escapeHtml(t('last_90'))}</button>`;
+  view.append(seg);
+
+  const summary = el('div', { class:'tiles', style:'margin-bottom:14px' });
+  view.append(summary);
+
+  // Charts
+  const c1 = el('div', { class:'card', style:'margin-bottom:14px' });
+  c1.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('income_vs_expense'))}</h3></div><canvas id="ch_ie" height="120"></canvas>`;
+  view.append(c1);
+
+  const c2 = el('div', { class:'card', style:'margin-bottom:14px' });
+  c2.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('by_category'))}</h3></div><canvas id="ch_cat" height="160"></canvas>`;
+  view.append(c2);
+
+  const c3 = el('div', { class:'card', style:'margin-bottom:14px' });
+  c3.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('monthly_trend'))}</h3></div><canvas id="ch_mt" height="120"></canvas>`;
+  view.append(c3);
+
+  const tcard = el('div', { class:'card' });
+  tcard.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('top_categories'))}</h3></div><div id="rep_top" class="stack"></div>`;
+  view.append(tcard);
+
+  function render(){
+    seg.querySelectorAll('button').forEach(b => b.classList.toggle('is-active', Number(b.dataset.p) === period));
+
+    const today = new Date(); today.setHours(0,0,0,0);
+    const startDate = new Date(today); startDate.setDate(today.getDate() - (period-1));
+    const txs = Q.txInRange(startDate, new Date(today.getTime() + 86399999));
+
+    const inc = Q.sum(txs, 'income');
+    const exp = Q.sum(txs, 'expense');
+    const net = inc - exp;
+    const rate = inc > 0 ? Math.round(((inc - exp)/inc)*100) : 0;
+    const avgDaily = exp / period;
+
+    summary.innerHTML = `
+      <div class="tile"><span class="tile-label">${escapeHtml(t('income'))}</span><span class="tile-value amount" style="color:var(--success)">${moneyHTML(inc)}</span></div>
+      <div class="tile"><span class="tile-label">${escapeHtml(t('expense'))}</span><span class="tile-value amount" style="color:var(--danger)">${moneyHTML(exp)}</span></div>
+      <div class="tile"><span class="tile-label">${escapeHtml(t('avg_daily'))}</span><span class="tile-value amount">${moneyHTML(avgDaily)}</span></div>
+      <div class="tile"><span class="tile-label">${escapeHtml(t('savings_rate'))}</span><span class="tile-value">${rate}%</span></div>`;
+
+    if (typeof Chart === 'undefined'){ return; }
+
+    // Per-day income vs expense
+    const labels = []; const incArr = []; const expArr = [];
+    for (let i = period - 1; i >= 0; i--){
+      const d = new Date(today); d.setDate(today.getDate() - i);
+      const next = new Date(d); next.setDate(d.getDate()+1);
+      const list = Q.txInRange(d, new Date(next.getTime()-1));
+      labels.push(d.toLocaleDateString(undefined, { month:'short', day:'2-digit' }));
+      incArr.push(Q.sum(list,'income'));
+      expArr.push(Q.sum(list,'expense'));
+    }
+    const ieCtx = view.querySelector('#ch_ie');
+    if (ieCtx._chart) ieCtx._chart.destroy();
+    ieCtx._chart = new Chart(ieCtx, {
+      type:'line',
+      data:{ labels, datasets:[
+        { label:t('income'),  data: incArr, borderColor:'#10a35b', backgroundColor:'rgba(16,163,91,0.08)', tension:0.35, fill:true, pointRadius:0, borderWidth:2 },
+        { label:t('expense'), data: expArr, borderColor:'#e11d48', backgroundColor:'rgba(225,29,72,0.08)', tension:0.35, fill:true, pointRadius:0, borderWidth:2 },
+      ]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:8, color:getCss('--text-2') } } }, scales:{ x:{ ticks:{ color:getCss('--text-2'), maxTicksLimit:7 }, grid:{ display:false } }, y:{ ticks:{ color:getCss('--text-2'), callback:(v)=>Fmt.moneyShort(v) }, grid:{ color:getCss('--hairline') } } } }
+    });
+
+    // Donut by category (expenses only)
+    const map = new Map();
+    for (const t of txs){ if (t.type !== 'expense') continue; map.set(t.category, (map.get(t.category)||0) + Number(t.amount||0)); }
+    const top = [...map.entries()].sort((a,b)=>b[1]-a[1]);
+    const catCtx = view.querySelector('#ch_cat');
+    if (catCtx._chart) catCtx._chart.destroy();
+    catCtx._chart = new Chart(catCtx, {
+      type:'doughnut',
+      data:{ labels: top.map(([id])=>Q.cat(id).name), datasets:[{ data: top.map(([,v])=>v), backgroundColor: top.map(([id])=>Q.cat(id).color), borderWidth:0 }] },
+      options:{ responsive:true, maintainAspectRatio:false, cutout:'68%', plugins:{ legend:{ position:'bottom', labels:{ boxWidth:8, color:getCss('--text-2') } } } }
+    });
+
+    // Monthly trend (12 months)
+    const mLabels = []; const mInc = []; const mExp = [];
+    const now = new Date();
+    for (let i = 11; i >= 0; i--){
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const r = Q.monthRange(d);
+      const list = Q.txInRange(r.start, r.end);
+      mLabels.push(d.toLocaleDateString(undefined, { month:'short' }));
+      mInc.push(Q.sum(list,'income'));
+      mExp.push(Q.sum(list,'expense'));
+    }
+    const mtCtx = view.querySelector('#ch_mt');
+    if (mtCtx._chart) mtCtx._chart.destroy();
+    mtCtx._chart = new Chart(mtCtx, {
+      type:'bar',
+      data:{ labels: mLabels, datasets:[
+        { label:t('income'),  data:mInc, backgroundColor:'#10a35b', borderRadius:6 },
+        { label:t('expense'), data:mExp, backgroundColor:'#e11d48', borderRadius:6 },
+      ]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:8, color:getCss('--text-2') } } }, scales:{ x:{ ticks:{ color:getCss('--text-2') }, grid:{ display:false } }, y:{ ticks:{ color:getCss('--text-2'), callback:(v)=>Fmt.moneyShort(v) }, grid:{ color:getCss('--hairline') } } } }
+    });
+
+    // Top categories list
+    const totalExp = top.reduce((s, [,v]) => s + v, 0);
+    const tBox = view.querySelector('#rep_top');
+    tBox.innerHTML = top.length === 0 ? '' : top.slice(0, 8).map(([id, v]) => {
+      const c = Q.cat(id); const pct = Math.round((v/Math.max(1,totalExp))*100);
+      return `<div>
+        <div class="row" style="margin-bottom:6px">
+          <span style="font-size:18px">${c.emoji}</span>
+          <span style="flex:1;font-weight:600">${escapeHtml(c.name)}</span>
+          <span class="muted small">${pct}%</span>
+          <span class="amount" style="font-weight:700">${moneyHTML(v)}</span>
+        </div>
+        <div class="progress"><div class="progress-fill" style="width:${pct}%;background:${c.color}"></div></div>
+      </div>`;
+    }).join('');
+    if (top.length === 0) renderEmpty(tBox, '🥧', t('no_data'), t('add_some_tx'));
+  }
+
+  seg.querySelectorAll('button').forEach(b => b.onclick = () => { period = Number(b.dataset.p); render(); });
+
+  // Wait for Chart.js if needed
+  if (typeof Chart === 'undefined'){
+    const interval = setInterval(() => { if (typeof Chart !== 'undefined'){ clearInterval(interval); render(); } }, 50);
+    setTimeout(()=>clearInterval(interval), 5000);
+  }
+  render();
+});
+
+function getCss(varName){
+  return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+}
+
+/* =========================================================
+   CATEGORIES
+   ========================================================= */
+Router.register('/categories', (view) => {
+  const all = State.categories();
+  const groups = { expense: all.filter(c=>c.type==='expense'), income: all.filter(c=>c.type==='income') };
+
+  const head = el('div', { class:'row row-between', style:'margin-bottom:12px' });
+  head.innerHTML = `<h2 class="h-display" style="font-size:24px">${escapeHtml(t('categories'))}</h2>`;
+  const btn = el('button', { class:'btn btn-primary' }, ['＋ ' + t('add_category')]);
+  btn.onclick = () => openCategoryEditor();
+  head.append(btn);
+  view.append(head);
+
+  ['expense','income'].forEach(kind => {
+    const card = el('div', { class:'card', style:'margin-bottom:14px' });
+    card.innerHTML = `<div class="card-h"><h3>${escapeHtml(kind === 'expense' ? t('expense') : t('income'))}</h3></div><div class="cat-grid" id="cs_${kind}"></div>`;
+    view.append(card);
+    const box = card.querySelector(`#cs_${kind}`);
+    groups[kind].forEach(c => {
+      const tile = el('button', { class:'cat-tile' });
+      tile.innerHTML = `<span class="e" style="background:${c.color}1a;border-radius:50%;width:38px;height:38px;display:grid;place-items:center;font-size:22px">${c.emoji}</span><span class="n">${escapeHtml(c.name)}</span>`;
+      tile.onclick = () => openCategoryEditor(c);
+      box.append(tile);
+    });
+  });
+});
+
+function openCategoryEditor(existing){
+  const card = Modal.open(`
+    <div class="modal-h"><div class="title">${escapeHtml(existing ? t('edit') : t('new_category'))}</div><button class="icon-btn" id="cc_close">✕</button></div>
+    <div class="modal-body">
+      <div class="field"><label class="field-label">${escapeHtml(t('select_emoji'))}</label><input class="input" id="cc_em" maxlength="3" value="${escapeHtml(existing?.emoji||'🏷️')}"/></div>
+      <div class="field"><label class="field-label">${escapeHtml(t('name'))}</label><input class="input" id="cc_name" value="${escapeHtml(existing?.name||'')}"/></div>
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">${escapeHtml(t('color'))}</label><input class="input" type="color" id="cc_color" value="${escapeHtml(existing?.color || '#7c3aed')}"/></div>
+        <div class="field"><label class="field-label">${escapeHtml(t('type'))}</label><select class="select" id="cc_type"><option value="expense" ${existing?.type==='expense'?'selected':''}>${escapeHtml(t('expense'))}</option><option value="income" ${existing?.type==='income'?'selected':''}>${escapeHtml(t('income'))}</option></select></div>
+      </div>
+    </div>
+    <div class="modal-foot"><span class="spacer"></span><button class="btn" id="cc_cancel">${escapeHtml(t('cancel'))}</button><button class="btn btn-primary" id="cc_save">${escapeHtml(t('save'))}</button></div>
+  `);
+  card.querySelector('#cc_cancel').onclick = card.querySelector('#cc_close').onclick = () => Modal.close();
+  card.querySelector('#cc_save').onclick = () => {
+    const data = {
+      emoji: card.querySelector('#cc_em').value || '🏷️',
+      name:  card.querySelector('#cc_name').value || '...',
+      color: card.querySelector('#cc_color').value,
+      type:  card.querySelector('#cc_type').value,
+    };
+    if (existing){
+      const c = State.raw().categories.find(x => x.id === existing.id);
+      if (c) Object.assign(c, data);
+      State.save();
+    } else {
+      State.addCategory(data);
+    }
+    Toast.show(t('saved'),'success'); Audio_.success();
+    Modal.close(); Router.render();
+  };
+}
+
+/* =========================================================
+   RECURRING
+   ========================================================= */
+Router.register('/recurring', (view) => {
+  const list = State.recurring();
+  const head = el('div', { class:'row row-between', style:'margin-bottom:12px' });
+  head.innerHTML = `<h2 class="h-display" style="font-size:24px">${escapeHtml(t('recurring'))}</h2>`;
+  const btn = el('button', { class:'btn btn-primary' }, ['＋ ' + t('add_recurring')]);
+  btn.onclick = () => openRecurringEditor();
+  head.append(btn);
+  view.append(head);
+
+  if (list.length === 0){
+    const b = el('button', { class:'btn btn-primary' }, [t('add_first')]);
+    b.onclick = () => openRecurringEditor();
+    renderEmpty(view, '🔁', t('no_recurring'), t('no_recurring_desc'), b);
+    return;
+  }
+  const monthlyTotal = list.filter(r => r.enabled).reduce((s, r) => {
+    const factor = ({ daily:30, weekly:4.33, biweekly:2.17, monthly:1, yearly:1/12 })[r.frequency] || 0;
+    return s + Number(r.amount||0) * factor;
+  }, 0);
+  const summary = el('div', { class:'card', style:'margin-bottom:12px' });
+  summary.innerHTML = `<div class="row"><div class="label">${escapeHtml(t('monthly_budget'))} (${escapeHtml(t('total'))})</div><span class="spacer"></span><strong class="amount" style="font-size:18px">${moneyHTML(monthlyTotal)}</strong></div>`;
+  view.append(summary);
+
+  const stack = el('div', { class:'stack' });
+  list.forEach(r => {
+    const c = Q.cat(r.category);
+    const days = r.nextDate ? Math.max(0, Math.ceil((new Date(r.nextDate) - new Date())/86400000)) : 0;
+    const item = el('div', { class:'card' });
+    item.innerHTML = `
+      <div class="row">
+        <div class="tx-icon" style="--cat-soft:${c.color}22">${c.emoji}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700">${escapeHtml(r.name)}</div>
+          <div class="muted small">${escapeHtml(({daily:t('daily'),weekly:t('weekly'),biweekly:t('biweekly'),monthly:t('monthly'),yearly:t('yearly')})[r.frequency])} · ${escapeHtml(t('next_payment'))}: ${days} ${escapeHtml(t('days'))}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="amount expense" style="font-weight:700">${moneyHTML(r.amount)}</div>
+          <div class="muted small">${moneyHTML(r.amount * 12)}/${escapeHtml(t('this_year').toLowerCase())}</div>
+        </div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px">
+        <button class="chip ${r.enabled?'chip-success':''}" data-toggle>${r.enabled ? t('enabled') : t('disabled')}</button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-ghost" data-edit>${escapeHtml(t('edit'))}</button>
+        <button class="btn btn-sm btn-danger" data-del>${escapeHtml(t('delete'))}</button>
+      </div>`;
+    item.querySelector('[data-toggle]').onclick = () => { State.updateRecurring(r.id, { enabled: !r.enabled }); Router.render(); };
+    item.querySelector('[data-edit]').onclick   = () => openRecurringEditor(r);
+    item.querySelector('[data-del]').onclick    = () => { State.removeRecurring(r.id); Toast.show(t('deleted')); Router.render(); };
+    stack.append(item);
+  });
+  view.append(stack);
+});
+
+function openRecurringEditor(existing){
+  const accs = State.accounts();
+  const cats = State.categories('expense');
+  const card = Modal.open(`
+    <div class="modal-h"><div class="title">${escapeHtml(existing ? t('edit') : t('new_recurring'))}</div><button class="icon-btn" id="r_close">✕</button></div>
+    <div class="modal-body">
+      <div class="field"><label class="field-label">${escapeHtml(t('name'))}</label><input class="input" id="r_name" value="${escapeHtml(existing?.name||'')}"/></div>
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">${escapeHtml(t('amount'))}</label><input class="input" type="number" inputmode="decimal" id="r_amt" value="${existing?.amount||''}"/></div>
+        <div class="field"><label class="field-label">${escapeHtml(t('frequency'))}</label><select class="select" id="r_freq">
+          ${['daily','weekly','biweekly','monthly','yearly'].map(f => `<option value="${f}" ${existing?.frequency===f?'selected':''}>${escapeHtml(t(f))}</option>`).join('')}
+        </select></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">${escapeHtml(t('category'))}</label><select class="select" id="r_cat">${cats.map(c=>`<option value="${c.id}" ${existing?.category===c.id?'selected':''}>${c.emoji} ${escapeHtml(c.name)}</option>`).join('')}</select></div>
+        <div class="field"><label class="field-label">${escapeHtml(t('account'))}</label><select class="select" id="r_acc">${accs.map(a=>`<option value="${a.id}" ${existing?.account===a.id?'selected':''}>${escapeHtml(a.name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label class="field-label">${escapeHtml(t('next_payment'))}</label><input class="input" type="date" id="r_next" value="${existing?.nextDate || Fmt.iso(new Date())}"/></div>
+    </div>
+    <div class="modal-foot"><span class="spacer"></span><button class="btn" id="r_cancel">${escapeHtml(t('cancel'))}</button><button class="btn btn-primary" id="r_save">${escapeHtml(t('save'))}</button></div>
+  `);
+  card.querySelector('#r_cancel').onclick = card.querySelector('#r_close').onclick = () => Modal.close();
+  card.querySelector('#r_save').onclick = () => {
+    const data = {
+      name: card.querySelector('#r_name').value || 'Subscription',
+      amount: parseFloat(card.querySelector('#r_amt').value) || 0,
+      frequency: card.querySelector('#r_freq').value,
+      category: card.querySelector('#r_cat').value,
+      account: card.querySelector('#r_acc').value,
+      nextDate: card.querySelector('#r_next').value,
+    };
+    if (data.amount <= 0){ Toast.show(t('enter_amount'),'danger'); return; }
+    if (existing) State.updateRecurring(existing.id, data);
+    else State.addRecurring(data);
+    Toast.show(t('saved'),'success'); Audio_.success(); Modal.close(); Router.render();
+  };
+}
+
+/* =========================================================
+   NET WORTH
+   ========================================================= */
+Router.register('/networth', (view) => {
+  const accs = State.accounts();
+  const assets = accs.filter(a => Number(a.balance) >= 0).reduce((s,a)=>s+Number(a.balance||0),0);
+  const debts  = accs.filter(a => Number(a.balance) < 0).reduce((s,a)=>s+Math.abs(Number(a.balance||0)),0);
+  const net = assets - debts;
+
+  const head = el('section', { class:'hero', style:'margin-bottom:14px' });
+  head.innerHTML = `
+    <div class="hero-row"><div>
+      <div class="hero-label">${escapeHtml(t('net_worth'))}</div>
+      <div class="hero-balance balance net">${moneyHTML(net)}</div>
+    </div></div>
+    <div class="hero-meta">
+      <span class="pill"><span class="dot dot-success"></span>Aktivlar: <strong>${moneyHTML(assets)}</strong></span>
+      <span class="pill"><span class="dot dot-danger"></span>Qarzlar: <strong>${moneyHTML(debts)}</strong></span>
+    </div>`;
+  view.append(head);
+
+  // Per account breakdown
+  const card = el('div', { class:'card', style:'margin-bottom:14px' });
+  card.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('overview'))}</h3></div>`;
+  accs.forEach(a => {
+    const at = ACCOUNT_TYPES.find(x=>x.id===a.type) || ACCOUNT_TYPES[0];
+    const pct = assets > 0 ? Math.round((Number(a.balance)/assets)*100) : 0;
+    const row = el('div', { style:'padding:10px 0;border-bottom:1px solid var(--hairline)' });
+    row.innerHTML = `
+      <div class="row" style="margin-bottom:6px">
+        <span style="font-size:18px">${at.emoji}</span>
+        <span style="font-weight:600;flex:1">${escapeHtml(a.name)}</span>
+        <span class="amount" style="font-weight:700">${moneyHTML(a.balance, a.currency)}</span>
+      </div>
+      <div class="progress"><div class="progress-fill" style="width:${Math.max(0,pct)}%"></div></div>`;
+    card.append(row);
+  });
+  view.append(card);
+
+  // 12-month chart
+  const ch = el('div', { class:'card' });
+  ch.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('monthly_trend'))}</h3></div><canvas id="ch_nw" height="120"></canvas>`;
+  view.append(ch);
+  if (typeof Chart !== 'undefined'){
+    const labels = []; const data = [];
+    const now = new Date();
+    let running = net;
+    // compute approximate monthly net by reversing flows from now
+    for (let i = 0; i < 12; i++){
+      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+      labels.unshift(d.toLocaleDateString(undefined,{month:'short'}));
+      data.unshift(running);
+      const r = Q.monthRange(d);
+      const list = Q.txInRange(r.start, r.end);
+      const flow = Q.sum(list,'income') - Q.sum(list,'expense');
+      running -= flow;
+    }
+    new Chart(view.querySelector('#ch_nw'), {
+      type:'line',
+      data:{ labels, datasets:[{ label:t('net_worth'), data, borderColor:getCss('--accent') || '#0a0a0a', backgroundColor:'rgba(124,58,237,0.08)', fill:true, tension:0.35, pointRadius:0, borderWidth:2 }]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ x:{ ticks:{ color:getCss('--text-2') }, grid:{ display:false } }, y:{ ticks:{ color:getCss('--text-2'), callback:(v)=>Fmt.moneyShort(v) }, grid:{ color:getCss('--hairline') } } } }
+    });
+  }
+});
+
+/* =========================================================
+   INSIGHTS
+   ========================================================= */
+Router.register('/insights', (view) => {
+  const insights = computeInsights();
+  if (insights.length === 0){
+    renderEmpty(view, '✨', t('no_insights'), t('no_insights_desc'));
+    return;
+  }
+  const stack = el('div', { class:'stack' });
+  insights.forEach(ins => {
+    const c = el('div', { class:'insight' });
+    c.innerHTML = `<span class="insight-emoji">${ins.emoji}</span><div><div class="label" style="margin-bottom:2px">${escapeHtml(ins.title || t('insight_of_day'))}</div><div style="font-size:14px;font-weight:600">${escapeHtml(ins.text)}</div></div>`;
+    stack.append(c);
+  });
+  view.append(stack);
+});
+
+function computeInsights(){
+  const out = [];
+  const txs = State.transactions();
+  if (txs.length === 0) return out;
+  const lang = State.lang();
+
+  // Week vs last week
+  const tw = Q.weekRange(); const lw = { start: new Date(tw.start), end: new Date(tw.end) };
+  lw.start.setDate(lw.start.getDate()-7); lw.end.setDate(lw.end.getDate()-7);
+  const twe = Q.sum(Q.txInRange(tw.start, tw.end),'expense');
+  const lwe = Q.sum(Q.txInRange(lw.start, lw.end),'expense');
+  if (lwe > 0){
+    const d = Math.round(((twe - lwe)/lwe)*100);
+    out.push({ emoji: d > 0 ? '⚠️' : '🌱', title: t('this_week'), text: lang === 'en' ? `${Math.abs(d)}% ${d>0?'more':'less'} than last week.` : (lang === 'ru' ? `На ${Math.abs(d)}% ${d>0?'больше':'меньше'}, чем неделей ранее.` : `O'tgan haftaga nisbatan ${Math.abs(d)}% ${d>0?'ko\'p':'kam'}.`) });
+  }
+  // Top category > 30%
+  const m = Q.monthRange();
+  const expL = Q.txInRange(m.start, m.end).filter(t=>t.type==='expense');
+  const totE = expL.reduce((s,t)=>s+Number(t.amount||0),0);
+  if (totE > 0){
+    const map = new Map(); for (const t of expL) map.set(t.category, (map.get(t.category)||0)+Number(t.amount||0));
+    const top = [...map.entries()].sort((a,b)=>b[1]-a[1])[0];
+    if (top){
+      const pct = Math.round((top[1]/totE)*100);
+      if (pct >= 30){
+        const c = Q.cat(top[0]);
+        out.push({ emoji: c.emoji, title: t('top_categories'), text: `${c.name} — ${pct}% ${lang==='en'?'of expenses':lang==='ru'?'расходов':'xarajatlar'}.` });
+      }
+    }
+  }
+  // Savings rate
+  const inc = Q.sum(Q.txInRange(m.start, m.end),'income');
+  const exp = Q.sum(Q.txInRange(m.start, m.end),'expense');
+  if (inc > 0){
+    const r = Math.round(((inc-exp)/inc)*100);
+    out.push({ emoji: r >= 20 ? '💎' : '💸', title: t('savings_rate'), text: r >= 0 ? `${r}%` : `${r}% (${lang==='en'?'overspending':'превышение'})` });
+  }
+  // Subscription cost
+  const recList = State.recurring().filter(r=>r.enabled);
+  if (recList.length){
+    const monthly = recList.reduce((s,r)=>s+Number(r.amount||0)*({ daily:30, weekly:4.33, biweekly:2.17, monthly:1, yearly:1/12 })[r.frequency], 0);
+    out.push({ emoji:'🔁', title: t('recurring'), text: `${Fmt.moneyShort(monthly)} / ${lang==='en'?'month':'oy'} · ${Fmt.moneyShort(monthly*12)} / ${lang==='en'?'year':'yil'}` });
+  }
+  // Goals forecast
+  State.goals().slice(0, 2).forEach(g => {
+    if (g.deadline && g.target > g.current){
+      const days = Math.max(1, Math.round((new Date(g.deadline)-new Date())/86400000));
+      const perDay = (g.target - g.current)/days;
+      out.push({ emoji: g.icon || '🎯', title: g.name, text: `${Fmt.moneyShort(perDay)}/${lang==='en'?'day':'kun'} ${lang==='en'?'to reach by':'·'} ${Fmt.date(g.deadline)}` });
+    }
+  });
+  return out;
+}
+
+/* =========================================================
+   MINI APPS
+   ========================================================= */
+Router.register('/mini', (view) => {
+  const items = [
+    ['loan',     '🧮', t('loan_calc')],
+    ['interest', '💰', t('interest_calc')],
+    ['fx',       '💱', t('fx_calc')],
+    ['mortgage', '🏠', t('mortgage_calc')],
+    ['tip',      '💵', t('tip_calc')],
+    ['roi',      '📈', t('roi_calc')],
+    ['split',    '🤝', t('bill_split')],
+    ['inflation','📊', t('inflation_calc')],
+    ['planner',  '🎯', t('goal_planner')],
+  ];
+  const grid = el('div', { class:'grid grid-2' });
+  items.forEach(([id, em, label]) => {
+    const c = el('button', { class:'card', style:'text-align:left;display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:18px' });
+    c.innerHTML = `<span style="font-size:28px">${em}</span><span style="font-weight:700;font-size:14px">${escapeHtml(label)}</span>`;
+    c.onclick = () => openMini(id);
+    grid.append(c);
+  });
+  view.append(grid);
+});
+
+function openMini(kind){
+  const u = State.user();
+  let body = '', title = '';
+  if (kind === 'loan'){
+    title = t('loan_calc');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Summa</label><input class="input" type="number" id="lc_p" value="100000000"/></div>
+        <div class="field"><label class="field-label">Yillik %</label><input class="input" type="number" id="lc_r" value="24" step="0.1"/></div>
+        <div class="field"><label class="field-label">Muddat (oy)</label><input class="input" type="number" id="lc_n" value="36"/></div>
+      </div>
+      <div class="card card-pad-lg" id="lc_out">—</div>`;
+  } else if (kind === 'interest'){
+    title = t('interest_calc');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Boshlang'ich</label><input class="input" type="number" id="ic_p" value="1000000"/></div>
+        <div class="field"><label class="field-label">Oylik qo'shish</label><input class="input" type="number" id="ic_pmt" value="500000"/></div>
+        <div class="field"><label class="field-label">Yillik %</label><input class="input" type="number" id="ic_r" value="12" step="0.1"/></div>
+        <div class="field"><label class="field-label">Yillar</label><input class="input" type="number" id="ic_y" value="5"/></div>
+      </div>
+      <div class="card card-pad-lg" id="ic_out">—</div>`;
+  } else if (kind === 'fx'){
+    title = t('fx_calc');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">From</label><select class="select" id="fx_a">${SUPPORTED_CURRENCIES.map(c=>`<option>${c}</option>`).join('')}</select></div>
+        <div class="field"><label class="field-label">To</label><select class="select" id="fx_b">${SUPPORTED_CURRENCIES.map(c=>`<option>${c}</option>`).join('')}</select></div>
+        <div class="field"><label class="field-label">Summa</label><input class="input" type="number" id="fx_v" value="100"/></div>
+        <div class="field"><label class="field-label">Kurs</label><input class="input" type="number" id="fx_r" value="12500" step="0.01"/></div>
+      </div>
+      <div class="card card-pad-lg" id="fx_out">—</div>
+      <p class="muted small">Kursni o'zingiz kiritasiz. Bu mini-ilova Internet talab qilmaydi.</p>`;
+  } else if (kind === 'mortgage'){
+    title = t('mortgage_calc');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Uy narxi</label><input class="input" type="number" id="m_h" value="800000000"/></div>
+        <div class="field"><label class="field-label">Boshlang'ich (%)</label><input class="input" type="number" id="m_d" value="20"/></div>
+        <div class="field"><label class="field-label">Yillik %</label><input class="input" type="number" id="m_r" value="18" step="0.1"/></div>
+        <div class="field"><label class="field-label">Muddat (yil)</label><input class="input" type="number" id="m_n" value="15"/></div>
+      </div>
+      <div class="card card-pad-lg" id="m_out">—</div>`;
+  } else if (kind === 'tip'){
+    title = t('tip_calc');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Hisob summasi</label><input class="input" type="number" id="tp_b" value="200000"/></div>
+        <div class="field"><label class="field-label">Choychaqa %</label><input class="input" type="number" id="tp_p" value="10"/></div>
+        <div class="field"><label class="field-label">Kishilar</label><input class="input" type="number" id="tp_n" value="2"/></div>
+      </div>
+      <div class="card card-pad-lg" id="tp_out">—</div>`;
+  } else if (kind === 'roi'){
+    title = t('roi_calc');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Investitsiya</label><input class="input" type="number" id="r_i" value="1000000"/></div>
+        <div class="field"><label class="field-label">Foyda</label><input class="input" type="number" id="r_g" value="1300000"/></div>
+      </div>
+      <div class="card card-pad-lg" id="r_out">—</div>`;
+  } else if (kind === 'split'){
+    title = t('bill_split');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Jami</label><input class="input" type="number" id="bs_t" value="500000"/></div>
+        <div class="field"><label class="field-label">Kishilar</label><input class="input" type="number" id="bs_n" value="4"/></div>
+        <div class="field"><label class="field-label">Choychaqa %</label><input class="input" type="number" id="bs_p" value="10"/></div>
+      </div>
+      <div class="card card-pad-lg" id="bs_out">—</div>`;
+  } else if (kind === 'inflation'){
+    title = t('inflation_calc');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Bugungi summa</label><input class="input" type="number" id="if_v" value="10000000"/></div>
+        <div class="field"><label class="field-label">Yillik inflyatsiya %</label><input class="input" type="number" id="if_r" value="10"/></div>
+        <div class="field"><label class="field-label">Yillar</label><input class="input" type="number" id="if_y" value="10"/></div>
+      </div>
+      <div class="card card-pad-lg" id="if_out">—</div>`;
+  } else if (kind === 'planner'){
+    title = t('goal_planner');
+    body = `
+      <div class="grid grid-2">
+        <div class="field"><label class="field-label">Maqsad summasi</label><input class="input" type="number" id="gp_t" value="50000000"/></div>
+        <div class="field"><label class="field-label">Jamg'arish (oylik)</label><input class="input" type="number" id="gp_m" value="2000000"/></div>
+        <div class="field"><label class="field-label">Yillik %</label><input class="input" type="number" id="gp_r" value="8"/></div>
+      </div>
+      <div class="card card-pad-lg" id="gp_out">—</div>`;
+  }
+  const card = Modal.open(`<div class="modal-h"><div class="title">${escapeHtml(title)}</div><button class="icon-btn" id="mn_close">✕</button></div><div class="modal-body">${body}</div><div class="modal-foot"><span class="spacer"></span><button class="btn btn-primary" id="mn_ok">${escapeHtml(t('close'))}</button></div>`);
+  card.querySelector('#mn_close').onclick = card.querySelector('#mn_ok').onclick = () => Modal.close();
+
+  const num = (id) => parseFloat(card.querySelector('#'+id).value) || 0;
+  const rec = () => {
+    if (kind === 'loan'){
+      const P = num('lc_p'), r = num('lc_r')/100/12, n = num('lc_n');
+      const m = r === 0 ? P/n : P*(r*Math.pow(1+r,n))/(Math.pow(1+r,n)-1);
+      card.querySelector('#lc_out').innerHTML = `Oylik to'lov<br><strong style="font-family:var(--font-display);font-size:28px">${moneyHTML(m)}</strong><br><span class="muted">Jami: ${moneyHTML(m*n)} · Foiz: ${moneyHTML(m*n - P)}</span>`;
+    } else if (kind === 'interest'){
+      const P = num('ic_p'), pmt = num('ic_pmt'), r = num('ic_r')/100/12, n = num('ic_y')*12;
+      let v = P; for (let i = 0; i < n; i++){ v = v*(1+r) + pmt; }
+      card.querySelector('#ic_out').innerHTML = `${num('ic_y')} yildan keyin<br><strong style="font-family:var(--font-display);font-size:28px">${moneyHTML(v)}</strong><br><span class="muted">Foyda: ${moneyHTML(v - P - pmt*n)}</span>`;
+    } else if (kind === 'fx'){
+      const r = num('fx_r'); const v = num('fx_v');
+      card.querySelector('#fx_out').innerHTML = `<strong style="font-family:var(--font-display);font-size:28px">${Fmt.number(v*r, { maximumFractionDigits:2 })} ${escapeHtml(card.querySelector('#fx_b').value)}</strong>`;
+    } else if (kind === 'mortgage'){
+      const H = num('m_h'); const d = num('m_d')/100; const P = H*(1-d);
+      const r = num('m_r')/100/12; const n = num('m_n')*12;
+      const m = r === 0 ? P/n : P*(r*Math.pow(1+r,n))/(Math.pow(1+r,n)-1);
+      card.querySelector('#m_out').innerHTML = `Oylik to'lov<br><strong style="font-family:var(--font-display);font-size:28px">${moneyHTML(m)}</strong><br><span class="muted">Boshlang'ich: ${moneyHTML(H*d)} · Jami foiz: ${moneyHTML(m*n - P)}</span>`;
+    } else if (kind === 'tip'){
+      const b = num('tp_b'); const p = num('tp_p')/100; const n = num('tp_n')||1;
+      const total = b*(1+p);
+      card.querySelector('#tp_out').innerHTML = `Jami: <strong>${moneyHTML(total)}</strong><br>Har kishi uchun: <strong style="font-family:var(--font-display);font-size:28px">${moneyHTML(total/n)}</strong>`;
+    } else if (kind === 'roi'){
+      const i = num('r_i'); const g = num('r_g');
+      const pct = i > 0 ? ((g-i)/i)*100 : 0;
+      card.querySelector('#r_out').innerHTML = `ROI<br><strong style="font-family:var(--font-display);font-size:28px;color:${pct>=0?'var(--success)':'var(--danger)'}">${pct.toFixed(1)}%</strong><br><span class="muted">Sof foyda: ${moneyHTML(g-i)}</span>`;
+    } else if (kind === 'split'){
+      const tot = num('bs_t'); const n = num('bs_n')||1; const p = num('bs_p')/100;
+      const each = tot*(1+p)/n;
+      card.querySelector('#bs_out').innerHTML = `Har kishi<br><strong style="font-family:var(--font-display);font-size:28px">${moneyHTML(each)}</strong><br><span class="muted">Jami: ${moneyHTML(tot*(1+p))}</span>`;
+    } else if (kind === 'inflation'){
+      const v = num('if_v'); const r = num('if_r')/100; const y = num('if_y');
+      const fut = v / Math.pow(1+r, y);
+      card.querySelector('#if_out').innerHTML = `${y} yildan keyin sotib olish kuchi<br><strong style="font-family:var(--font-display);font-size:28px">${moneyHTML(fut)}</strong><br><span class="muted">${Math.round((1 - fut/v)*100)}% qiymat yo'qotadi</span>`;
+    } else if (kind === 'planner'){
+      const t_ = num('gp_t'); const pmt = num('gp_m'); const r = num('gp_r')/100/12;
+      let v = 0, months = 0;
+      while (v < t_ && months < 600){ v = v*(1+r) + pmt; months++; }
+      card.querySelector('#gp_out').innerHTML = `Erishish vaqti<br><strong style="font-family:var(--font-display);font-size:28px">${Math.floor(months/12)} yil ${months%12} oy</strong>`;
+    }
+  };
+  card.querySelectorAll('input,select').forEach(i => i.oninput = i.onchange = rec);
+  rec();
+}
+
+/* =========================================================
+   SETTINGS
+   ========================================================= */
+Router.register('/settings', (view) => {
+  const s = State.settings();
+  const u = State.user();
+
+  // Profile card
+  const pc = el('div', { class:'card', style:'margin-bottom:14px' });
+  pc.innerHTML = `
+    <div class="row">
+      <div style="width:48px;height:48px;border-radius:50%;background:var(--accent);color:var(--accent-on);display:grid;place-items:center;font-family:var(--font-display);font-size:22px">${escapeHtml((u.name||'?').slice(0,1).toUpperCase())}</div>
+      <div style="flex:1"><input class="input" id="st_name" value="${escapeHtml(u.name||'')}" placeholder="${escapeHtml(t('your_name'))}"/></div>
+    </div>`;
+  view.append(pc);
+  pc.querySelector('#st_name').onchange = e => State.set(d => { d.user.name = e.target.value; });
+
+  // Theme & accent
+  const tc = el('div', { class:'card', style:'margin-bottom:14px' });
+  tc.innerHTML = `
+    <div class="card-h"><h3>${escapeHtml(t('theme'))}</h3></div>
+    <div class="seg" id="st_theme"><button data-v="light">${escapeHtml(t('light'))}</button><button data-v="dark">${escapeHtml(t('dark'))}</button><button data-v="auto">${escapeHtml(t('auto'))}</button></div>
+    <div class="card-h" style="margin-top:14px"><h3>${escapeHtml(t('accent'))}</h3></div>
+    <div class="row" style="gap:10px;flex-wrap:wrap" id="st_acc">
+      ${[['default','#0a0a0a'],['green','#10a35b'],['blue','#2563eb'],['purple','#7c3aed'],['orange','#ea580c'],['rose','#e11d48']].map(([k,c]) =>
+        `<button data-v="${k}" aria-label="${k}" style="width:32px;height:32px;border-radius:50%;background:${c};box-shadow:inset 0 0 0 2px var(--bg), 0 0 0 ${s.accent===k?'2px':'0'} var(--accent);transition:box-shadow var(--t-fast)"></button>`
+      ).join('')}
+    </div>`;
+  view.append(tc);
+  tc.querySelectorAll('#st_theme button').forEach(b => {
+    b.classList.toggle('is-active', s.theme === b.dataset.v);
+    b.onclick = () => { Theme.setTheme(b.dataset.v); Router.render(); };
+  });
+  tc.querySelectorAll('#st_acc button').forEach(b => b.onclick = () => { Theme.setAccent(b.dataset.v); Router.render(); });
+
+  // Language
+  const lc = el('div', { class:'card', style:'margin-bottom:14px' });
+  lc.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('language'))}</h3></div><div class="seg" id="st_lang"><button data-v="uz">O'zbek</button><button data-v="en">English</button><button data-v="ru">Русский</button></div>`;
+  view.append(lc);
+  lc.querySelectorAll('#st_lang button').forEach(b => {
+    b.classList.toggle('is-active', State.lang() === b.dataset.v);
+    b.onclick = () => { State.set(d => { d.user.language = b.dataset.v; d.settings.language = b.dataset.v; }); Router.render(); };
+  });
+
+  // Currency
+  const cc = el('div', { class:'card', style:'margin-bottom:14px' });
+  cc.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('select_currency'))}</h3></div>
+    <select class="select" id="st_cur">${SUPPORTED_CURRENCIES.map(c => `<option value="${c}" ${u.currency===c?'selected':''}>${c} — ${Fmt.currencySymbol(c)}</option>`).join('')}</select>`;
+  view.append(cc);
+  cc.querySelector('#st_cur').onchange = e => State.set(d => { d.user.currency = e.target.value; });
+
+  // Toggles
+  const togs = [
+    ['sounds', t('sounds')],
+    ['haptics', t('haptics')],
+    ['privacyMode', t('privacy_mode')],
+    ['autoBackup', 'Avto-zaxira (7 kun)'],
+  ];
+  const tg = el('div', { class:'card', style:'margin-bottom:14px' });
+  tg.innerHTML = `<div class="card-h"><h3>${escapeHtml(t('overview'))}</h3></div>` + togs.map(([k,label]) => `
+    <div class="row" style="padding:10px 0;border-bottom:1px solid var(--hairline)">
+      <span style="flex:1;font-weight:600">${escapeHtml(label)}</span>
+      <button class="toggle ${s[k] ? 'is-on' : ''}" data-tg="${k}"></button>
+    </div>`).join('');
+  view.append(tg);
+  tg.querySelectorAll('[data-tg]').forEach(b => b.onclick = () => {
+    State.set(d => { d.settings[b.dataset.tg] = !d.settings[b.dataset.tg]; });
+    Theme.apply(); Router.render(); Haptic.light();
+  });
+
+  // Data
+  const dc = el('div', { class:'card', style:'margin-bottom:14px' });
+  dc.innerHTML = `
+    <div class="card-h"><h3>${escapeHtml(t('backup'))}</h3></div>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <button class="btn" id="st_export">${escapeHtml(t('export'))} JSON</button>
+      <button class="btn" id="st_csv">${escapeHtml(t('export'))} CSV</button>
+      <button class="btn" id="st_import">${escapeHtml(t('import'))} JSON</button>
+      <input type="file" accept="application/json" id="st_file" hidden/>
+    </div>`;
+  view.append(dc);
+  dc.querySelector('#st_export').onclick = () => {
+    const blob = new Blob([JSON.stringify(State.raw(), null, 2)], { type:'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `qiymat-backup-${Fmt.iso(new Date())}.json`;
+    document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    Toast.show(t('saved'),'success');
+  };
+  dc.querySelector('#st_csv').onclick = exportCSV;
+  dc.querySelector('#st_import').onclick = () => dc.querySelector('#st_file').click();
+  dc.querySelector('#st_file').onchange = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const j = JSON.parse(r.result);
+        if (!j || !j.user) throw 0;
+        State.set(d => { Object.keys(d).forEach(k => delete d[k]); Object.assign(d, j); });
+        Toast.show(t('saved'),'success'); Router.render();
+      } catch { Toast.show('Import failed','danger'); }
+    };
+    r.readAsText(f);
+  };
+
+  // Shortcuts
+  const sc = el('div', { class:'card', style:'margin-bottom:14px' });
+  sc.innerHTML = `
+    <div class="card-h"><h3>${escapeHtml(t('keyboard_shortcuts'))}</h3></div>
+    <div style="font-family:var(--font-mono);font-size:13px;line-height:1.9">
+      <div><kbd>N</kbd> — ${escapeHtml(t('new_tx'))}</div>
+      <div><kbd>T</kbd> — ${escapeHtml(t('theme'))}</div>
+      <div><kbd>G</kbd>+<kbd>D</kbd> — ${escapeHtml(t('dashboard'))}</div>
+      <div><kbd>G</kbd>+<kbd>T</kbd> — ${escapeHtml(t('transactions'))}</div>
+      <div><kbd>G</kbd>+<kbd>B</kbd> — ${escapeHtml(t('budget'))}</div>
+      <div><kbd>G</kbd>+<kbd>S</kbd> — ${escapeHtml(t('goals'))}</div>
+      <div><kbd>G</kbd>+<kbd>A</kbd> — ${escapeHtml(t('accounts'))}</div>
+      <div><kbd>G</kbd>+<kbd>R</kbd> — ${escapeHtml(t('reports'))}</div>
+      <div><kbd>Esc</kbd> — ${escapeHtml(t('close'))}</div>
+    </div>`;
+  view.append(sc);
+
+  // Privacy footer
+  const fr = el('div', { class:'card insight', style:'margin-bottom:14px' });
+  fr.innerHTML = `<span class="insight-emoji">🔒</span><div><div class="label" style="margin-bottom:2px">${escapeHtml(t('privacy_first'))}</div><div class="small">${escapeHtml(t('privacy_first_desc'))}</div></div>`;
+  view.append(fr);
+
+  // Danger zone
+  const danger = el('div', { class:'card', style:'border-color:var(--danger);background:var(--danger-soft)' });
+  danger.innerHTML = `<div class="card-h"><h3 style="color:var(--danger)">${escapeHtml(t('danger_zone'))}</h3></div>`;
+  const btn = el('button', { class:'btn btn-danger btn-block' }, [t('reset_all')]);
+  btn.onclick = () => {
+    if (confirm(t('confirm_reset'))){
+      localStorage.removeItem(STORAGE_KEY);
+      location.reload();
+    }
+  };
+  danger.append(btn);
+  view.append(danger);
+});
