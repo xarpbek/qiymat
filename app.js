@@ -968,14 +968,340 @@ function safeCalc(expr){
 /* ---------- Views (defined in next chunks) ---------- */
 const Views = {};
 
-// Temporary placeholder views — replaced in subsequent commits.
+// Placeholder views — gradually replaced.
 function placeholder(view, title, desc){
   view.append(el('div', { class:'card card-pad-lg' }, [
     el('h2', { class:'h-display', style:'font-size:24px;margin-bottom:6px' }, [title]),
     el('p', { class:'muted' }, [desc])
   ]));
 }
-Router.register('/',             v => placeholder(v, t('dashboard'), t('add_some_tx')));
+
+/* =========================================================
+   DASHBOARD
+   ========================================================= */
+function moneyHTML(n, currency){
+  currency = currency || State.user().currency;
+  const num = Fmt.number(n, currency === 'UZS' ? { maximumFractionDigits: 0 } : {});
+  const sym = Fmt.currencySymbol(currency);
+  if (currency === 'UZS') return `<span class="num">${num}</span> <span class="cur">${escapeHtml(sym)}</span>`;
+  return `<span class="cur">${escapeHtml(sym)}</span><span class="num">${num}</span>`;
+}
+
+function sparklinePath(values, w=320, h=56, pad=4){
+  if (!values.length) return { path:'', area:'' };
+  const min = Math.min(...values, 0), max = Math.max(...values, 0);
+  const span = (max - min) || 1;
+  const stepX = (w - pad*2) / Math.max(1, values.length - 1);
+  const ptsArr = values.map((v,i) => [pad + i*stepX, h - pad - ((v - min)/span) * (h - pad*2)]);
+  let p = '';
+  ptsArr.forEach(([x,y], i) => p += (i ? ' L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1));
+  const a = p + ` L${(pad + (values.length-1)*stepX).toFixed(1)} ${(h-pad).toFixed(1)} L${pad} ${(h-pad).toFixed(1)} Z`;
+  return { path: p, area: a };
+}
+
+function netFlowDaily(days=30){
+  const out = []; const today = new Date(); today.setHours(0,0,0,0);
+  for (let i = days - 1; i >= 0; i--){
+    const d = new Date(today); d.setDate(today.getDate() - i);
+    const next = new Date(d); next.setDate(d.getDate()+1);
+    const list = Q.txInRange(d, new Date(next.getTime()-1));
+    out.push(Q.sum(list, 'income') - Q.sum(list, 'expense'));
+  }
+  return out;
+}
+
+function topCategories(period='month', limit=3){
+  const r = period === 'month' ? Q.monthRange() : Q.weekRange();
+  const list = Q.txInRange(r.start, r.end).filter(t => t.type === 'expense');
+  const map = new Map();
+  for (const t of list){
+    map.set(t.category, (map.get(t.category) || 0) + Number(t.amount || 0));
+  }
+  return [...map.entries()]
+    .map(([cat, sum]) => ({ cat, sum, info: Q.cat(cat) }))
+    .sort((a,b) => b.sum - a.sum)
+    .slice(0, limit);
+}
+
+function dashboardInsight(){
+  const txs = State.transactions();
+  if (txs.length < 3) return { emoji:'✨', text: t('add_some_tx') };
+  const lang = State.lang();
+
+  // Compare this week vs last
+  const thisWeek = Q.weekRange();
+  const last = { start: new Date(thisWeek.start), end: new Date(thisWeek.end) };
+  last.start.setDate(last.start.getDate()-7);
+  last.end.setDate(last.end.getDate()-7);
+  const tw = Q.sum(Q.txInRange(thisWeek.start, thisWeek.end), 'expense');
+  const lw = Q.sum(Q.txInRange(last.start,    last.end),    'expense');
+  if (lw > 0){
+    const diff = ((tw - lw) / lw) * 100;
+    if (Math.abs(diff) >= 15){
+      if (diff > 0){
+        if (lang === 'ru') return { emoji:'⚠️', text:`Вы тратите на ${Math.round(diff)}% больше, чем на прошлой неделе.` };
+        if (lang === 'en') return { emoji:'⚠️', text:`You're spending ${Math.round(diff)}% more than last week.` };
+        return { emoji:'⚠️', text:`Bu hafta o'tgan haftaga nisbatan ${Math.round(diff)}% ko'proq sarfladingiz.` };
+      } else {
+        if (lang === 'ru') return { emoji:'🌱', text:`Расходы снизились на ${Math.abs(Math.round(diff))}% к прошлой неделе. Так держать!` };
+        if (lang === 'en') return { emoji:'🌱', text:`Spending is down ${Math.abs(Math.round(diff))}% from last week. Nice.` };
+        return { emoji:'🌱', text:`Bu hafta o'tganga nisbatan ${Math.abs(Math.round(diff))}% kam sarfladingiz. Zo'r!` };
+      }
+    }
+  }
+
+  // Savings rate
+  const m = Q.monthRange();
+  const inc = Q.sum(Q.txInRange(m.start, m.end), 'income');
+  const exp = Q.sum(Q.txInRange(m.start, m.end), 'expense');
+  if (inc > 0){
+    const rate = Math.max(0, Math.round(((inc - exp) / inc) * 100));
+    if (lang === 'ru') return { emoji:'💎', text:`Норма сбережений в этом месяце — ${rate}%.` };
+    if (lang === 'en') return { emoji:'💎', text:`Your savings rate this month is ${rate}%.` };
+    return { emoji:'💎', text:`Bu oyda jamg'arish darajangiz: ${rate}%.` };
+  }
+  return { emoji:'✨', text: 'Davom eting!' };
+}
+
+Router.register('/', (view) => {
+  const accs = State.accounts();
+  if (accs.length === 0){
+    const btn = el('button', { class:'btn btn-primary' }, [t('add_account')]);
+    btn.onclick = () => Router.navigate('/accounts');
+    renderEmpty(view, '💎', t('app_title'), t('no_acc'), btn);
+    return;
+  }
+
+  const monthR = Q.monthRange();
+  const lastMonthR = (() => { const d = new Date(); d.setMonth(d.getMonth()-1); return Q.monthRange(d); })();
+  const todayR = Q.dayRange();
+  const weekR  = Q.weekRange();
+  const yearR  = Q.yearRange();
+
+  const incM = Q.sum(Q.txInRange(monthR.start, monthR.end), 'income');
+  const expM = Q.sum(Q.txInRange(monthR.start, monthR.end), 'expense');
+  const expLM = Q.sum(Q.txInRange(lastMonthR.start, lastMonthR.end), 'expense');
+  const incLM = Q.sum(Q.txInRange(lastMonthR.start, lastMonthR.end), 'income');
+
+  const totalBal = Q.totalBalance();
+  const sparkData = netFlowDaily(30);
+  const sp = sparklinePath(sparkData);
+
+  const expDelta = Q.delta(expM, expLM);
+  const incDelta = Q.delta(incM, incLM);
+
+  // Hero balance card
+  const hero = el('section', { class:'hero', style:'margin-bottom:14px' });
+  hero.innerHTML = `
+    <div class="hero-row">
+      <div>
+        <div class="hero-label">${escapeHtml(t('total_balance'))}</div>
+        <div class="hero-balance balance">${moneyHTML(totalBal)}</div>
+      </div>
+    </div>
+    <div class="hero-meta">
+      <span class="pill"><span class="dot dot-success"></span>${escapeHtml(t('income'))}: <strong>${moneyHTML(incM)}</strong>${incLM>0 ? ` <span class="${incDelta>=0?'delta-up':'delta-down'}" style="margin-left:6px">${incDelta>=0?'↑':'↓'} ${Math.abs(Math.round(incDelta))}%</span>` : ''}</span>
+      <span class="pill"><span class="dot dot-danger"></span>${escapeHtml(t('expense'))}: <strong>${moneyHTML(expM)}</strong>${expLM>0 ? ` <span class="${expDelta<=0?'delta-up':'delta-down'}" style="margin-left:6px">${expDelta>=0?'↑':'↓'} ${Math.abs(Math.round(expDelta))}%</span>` : ''}</span>
+    </div>
+    <div class="spark" aria-hidden="true">
+      <svg viewBox="0 0 320 56" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="spg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="currentColor" stop-opacity="0.18"/>
+            <stop offset="100%" stop-color="currentColor" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <path d="${sp.area}" fill="url(#spg)"/>
+        <path d="${sp.path}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.95"/>
+      </svg>
+    </div>`;
+  view.append(hero);
+
+  // Quick stat tiles
+  const expToday = Q.sum(Q.txInRange(todayR.start, todayR.end), 'expense');
+  const expWeek  = Q.sum(Q.txInRange(weekR.start, weekR.end),  'expense');
+  const expYear  = Q.sum(Q.txInRange(yearR.start, yearR.end),  'expense');
+  const tiles = el('section', { class:'tiles', style:'margin-bottom:14px' });
+  const mkTile = (label, value) => `
+    <div class="tile">
+      <span class="tile-label">${escapeHtml(label)}</span>
+      <span class="tile-value amount">${moneyHTML(value)}</span>
+    </div>`;
+  tiles.innerHTML = [
+    mkTile(t('today'),     expToday),
+    mkTile(t('this_week'), expWeek),
+    mkTile(t('this_month'), expM),
+    mkTile(t('this_year'), expYear),
+  ].join('');
+  view.append(tiles);
+
+  // Insight of the day
+  const ins = dashboardInsight();
+  const insightCard = el('section', { class:'insight', style:'margin-bottom:14px' });
+  insightCard.innerHTML = `
+    <span class="insight-emoji">${ins.emoji}</span>
+    <div>
+      <div class="label" style="margin-bottom:2px">${escapeHtml(t('insight_of_day'))}</div>
+      <div style="font-size:14px;font-weight:600">${escapeHtml(ins.text)}</div>
+    </div>`;
+  view.append(insightCard);
+
+  // Two-column: Recent tx + Top categories
+  const grid = el('section', { class:'grid', style:'grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap:14px; margin-bottom:14px' });
+
+  const recent = State.transactions().slice(0, 5);
+  const recentCard = el('div', { class:'card' });
+  recentCard.innerHTML = `
+    <div class="card-h">
+      <h3>${escapeHtml(t('recent'))}</h3>
+      <a class="link" href="#/transactions">${escapeHtml(t('view_all'))} →</a>
+    </div>
+    <div id="dash_recent"></div>`;
+  grid.append(recentCard);
+
+  const topCats = topCategories('month', 3);
+  const topCard = el('div', { class:'card' });
+  topCard.innerHTML = `
+    <div class="card-h"><h3>${escapeHtml(t('top_categories'))}</h3></div>
+    <div id="dash_top"></div>`;
+  grid.append(topCard);
+  view.append(grid);
+
+  // Stack on small screens
+  if (window.matchMedia('(max-width: 760px)').matches){
+    grid.style.gridTemplateColumns = '1fr';
+  }
+
+  // Render recent
+  const recentBox = $('#dash_recent', view);
+  if (recent.length === 0){
+    const btn = el('button', { class:'btn btn-primary' }, [t('add_first')]);
+    btn.onclick = () => Router.navigate('/add');
+    renderEmpty(recentBox, '📭', t('no_tx'), t('no_tx_desc'), btn);
+  } else {
+    recent.forEach(tx => recentBox.append(renderTxRow(tx)));
+  }
+
+  // Render top categories with mini donut
+  const topBox = $('#dash_top', view);
+  if (topCats.length === 0){
+    renderEmpty(topBox, '🥧', t('no_data'), t('add_some_tx'));
+  } else {
+    const total = topCats.reduce((s,x)=>s+x.sum, 0);
+    const r = 28; const C = 2*Math.PI*r;
+    let acc = 0; let segments = '';
+    topCats.forEach((c) => {
+      const frac = c.sum / total;
+      const dash = (frac * C);
+      const offset = -acc;
+      segments += `<circle cx="36" cy="36" r="${r}" fill="none" stroke="${c.info.color}" stroke-width="10" stroke-dasharray="${dash.toFixed(2)} ${(C - dash).toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 36 36)"/>`;
+      acc += dash;
+    });
+    const donut = el('div', { style:'display:flex;align-items:center;gap:14px;padding:6px 2px 12px' });
+    donut.innerHTML = `
+      <svg width="72" height="72" viewBox="0 0 72 72" aria-hidden="true">
+        <circle cx="36" cy="36" r="${r}" fill="none" stroke="var(--surface-3)" stroke-width="10"/>
+        ${segments}
+      </svg>
+      <div style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0">
+        ${topCats.map(c => `
+          <div class="row" style="gap:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:${c.info.color};flex-shrink:0"></span>
+            <span style="flex:1;font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.info.emoji} ${escapeHtml(c.info.name)}</span>
+            <span class="amount" style="font-weight:700;font-size:12.5px">${moneyHTML(c.sum)}</span>
+          </div>`).join('')}
+      </div>`;
+    topBox.append(donut);
+  }
+
+  // Budgets ring overview
+  const buds = State.budgets().filter(b => b.month === new Date().getMonth() && b.year === new Date().getFullYear());
+  if (buds.length){
+    const card = el('div', { class:'card', style:'margin-bottom:14px' });
+    card.innerHTML = `
+      <div class="card-h">
+        <h3>${escapeHtml(t('budget'))} · ${escapeHtml(Fmt.monthLabel(new Date()))}</h3>
+        <a class="link" href="#/budget">${escapeHtml(t('view_all'))} →</a>
+      </div>
+      <div id="dash_buds" class="grid grid-3"></div>`;
+    view.append(card);
+    const box = $('#dash_buds', view);
+    buds.slice(0, 6).forEach(b => {
+      const c = Q.cat(b.category);
+      const spent = Q.txInRange(monthR.start, monthR.end)
+        .filter(t => t.type==='expense' && t.category===b.category)
+        .reduce((s,t)=>s+Number(t.amount||0),0);
+      const pct = Math.min(100, Math.round((spent / Math.max(1,b.limit)) * 100));
+      const cls = pct >= 100 ? 'danger' : pct >= 80 ? 'warning' : 'success';
+      const r = 22, C = 2*Math.PI*r;
+      const off = C - (pct/100)*C;
+      const item = el('div', { class:'card', style:'display:flex;align-items:center;gap:12px;padding:12px' });
+      item.innerHTML = `
+        <svg class="ring" width="56" height="56" viewBox="0 0 56 56">
+          <circle class="ring-bg" cx="28" cy="28" r="${r}" fill="none" stroke-width="6"/>
+          <circle class="ring-fg ${cls}" cx="28" cy="28" r="${r}" fill="none" stroke-width="6" stroke-linecap="round"
+            stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 28 28)"/>
+        </svg>
+        <div style="min-width:0;flex:1">
+          <div style="font-weight:700;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.emoji} ${escapeHtml(c.name)}</div>
+          <div class="small muted">${moneyHTML(spent)} / ${moneyHTML(b.limit)}</div>
+        </div>
+        <span class="chip ${cls === 'success' ? 'chip-success' : cls === 'warning' ? 'chip-warning' : 'chip-danger'}">${pct}%</span>`;
+      box.append(item);
+    });
+  }
+
+  // Goals mini progress
+  const goals = State.goals().slice(0, 3);
+  if (goals.length){
+    const card = el('div', { class:'card', style:'margin-bottom:14px' });
+    card.innerHTML = `
+      <div class="card-h">
+        <h3>${escapeHtml(t('goals'))}</h3>
+        <a class="link" href="#/goals">${escapeHtml(t('view_all'))} →</a>
+      </div>
+      <div id="dash_goals" class="stack"></div>`;
+    view.append(card);
+    const box = $('#dash_goals', view);
+    goals.forEach(g => {
+      const pct = Math.min(100, Math.round((g.current / Math.max(1, g.target)) * 100));
+      const row = el('div');
+      row.innerHTML = `
+        <div class="row" style="margin-bottom:6px">
+          <span style="font-size:18px">${g.icon || '🎯'}</span>
+          <span style="font-weight:700;font-size:14px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(g.name)}</span>
+          <span class="muted small">${moneyHTML(g.current)} / ${moneyHTML(g.target)}</span>
+        </div>
+        <div class="progress ${pct>=100?'success':''}"><div class="progress-fill" style="width:${pct}%"></div></div>`;
+      box.append(row);
+    });
+  }
+});
+
+/* Render a single transaction row (reused in dashboard + transactions list) */
+function renderTxRow(tx){
+  const c = Q.cat(tx.category);
+  const a = Q.acc(tx.account);
+  const sign = tx.type === 'income' ? '+' : (tx.type === 'expense' ? '−' : '↔');
+  const node = el('div', {
+    class: 'tx',
+    style: `--cat-color:${c.color}; --cat-soft:${c.color}22`,
+  });
+  node.innerHTML = `
+    <div class="tx-icon">${c.emoji}</div>
+    <div class="tx-meta">
+      <div class="tx-title">${escapeHtml(tx.note || c.name)}</div>
+      <div class="tx-sub">${escapeHtml(c.name)} · ${escapeHtml(a.name || '—')}</div>
+    </div>
+    <div class="tx-amount ${tx.type}">${sign} ${moneyHTML(tx.amount, tx.currency)}</div>`;
+  node.addEventListener('click', () => {
+    if (typeof Views.editTransaction === 'function') Views.editTransaction(tx.id);
+    else Router.navigate('/transactions');
+  });
+  return node;
+}
+
+/* ---------- Other routes (still placeholders for now) ---------- */
 Router.register('/transactions', v => placeholder(v, t('transactions'), '...'));
 Router.register('/add',          v => placeholder(v, t('new_tx'), '...'));
 Router.register('/budget',       v => placeholder(v, t('budget'), '...'));
@@ -988,7 +1314,39 @@ Router.register('/networth',     v => placeholder(v, t('networth'), '...'));
 Router.register('/insights',     v => placeholder(v, t('insights'), '...'));
 Router.register('/mini',         v => placeholder(v, t('mini'), '...'));
 Router.register('/settings',     v => placeholder(v, t('settings'), '...'));
-Router.register('/more',         v => placeholder(v, t('nav_more'), '...'));
+
+/* "More" menu (mobile) — tiles for everything */
+Router.register('/more', (view) => {
+  const u = State.user();
+  const greet = el('div', { class:'card', style:'margin-bottom:14px' });
+  greet.innerHTML = `
+    <div class="row">
+      <div style="width:44px;height:44px;border-radius:50%;background:var(--accent);color:var(--accent-on);display:grid;place-items:center;font-family:var(--font-display);font-size:20px">${escapeHtml((u.name||'?').slice(0,1).toUpperCase())}</div>
+      <div>
+        <div style="font-weight:700">${escapeHtml(u.name || 'Friend')}</div>
+        <div class="muted small">${escapeHtml(t('level'))} ${u.level} · ${u.xp} ${escapeHtml(t('xp'))}</div>
+      </div>
+    </div>`;
+  view.append(greet);
+  const items = [
+    ['/goals',      t('goals'),      '💎'],
+    ['/accounts',   t('accounts'),   '💳'],
+    ['/reports',    t('reports'),    '📊'],
+    ['/categories', t('categories'), '🏷️'],
+    ['/recurring',  t('recurring'),  '🔁'],
+    ['/networth',   t('networth'),   '📈'],
+    ['/insights',   t('insights'),   '✨'],
+    ['/mini',       t('mini'),       '🛠️'],
+    ['/settings',   t('settings'),   '⚙️'],
+  ];
+  const grid = el('div', { class:'grid grid-3' });
+  items.forEach(([href, label, emo]) => {
+    const a = el('a', { href:'#'+href, class:'card', style:'display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:18px;min-height:96px;border-radius:18px' });
+    a.innerHTML = `<span style="font-size:28px;line-height:1">${emo}</span><span style="font-weight:700;font-size:14px">${escapeHtml(label)}</span>`;
+    grid.append(a);
+  });
+  view.append(grid);
+});
 
 /* Empty state helper */
 function renderEmpty(parent, glyph, title, desc, action){
